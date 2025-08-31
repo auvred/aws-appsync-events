@@ -1,7 +1,11 @@
 import { expect, describe, test, vi, afterEach, beforeEach, onTestFinished } from 'vitest'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { Client, exponentialBackoffRetryBehavior, parseEndpoint, ResettableTimer, type ClientOpts, type WebSocketAdapter, type WebSocketAdapterConstructor } from '../src/client.js'
+import { Client, parseEndpoint, ResettableTimer, type ClientOpts, type WebSocketAdapter, type WebSocketAdapterConstructor } from '../src/client.js'
 import * as util from 'node:util'
+
+function simpleRetryBehavior(maxAttempts: number, delay = 10) {
+  return (attempt: number) => attempt > maxAttempts ? -1 : delay
+}
 
 function expectMockCalledWithError(mock: ReturnType<typeof vi.fn>, msg: string) {
   expect(mock).toHaveBeenCalledOnce()
@@ -325,7 +329,7 @@ describe('Client', { timeout: 100 }, () => {
       return JSON.parse(message)
     }
 
-    consumeSubscribeRequest = (channel: string ) => {
+    consumeSubscribeRequest = (channel: string): string => {
       const msg = this.consumeMessage()
       expect(msg).toEqual({
         type: 'subscribe',
@@ -373,7 +377,10 @@ describe('Client', { timeout: 100 }, () => {
   }
 
   function newClient(opts?: ClientOpts) {
-    const client = new Client('example.com', { type: 'API_KEY', key: 'foo' }, opts)
+    const client = new Client('example.com', { type: 'API_KEY', key: 'foo' }, {
+      retryBehavior: simpleRetryBehavior(3),
+      ...opts,
+    })
     const sockets: Socket[] = []
 
     // @ts-expect-error - incompatible addEventListener/removeEventListener
@@ -387,6 +394,7 @@ describe('Client', { timeout: 100 }, () => {
       }
 
       send = (data: string): void => {
+        expect(this.closed).toBeFalsy()
         this.incomingMessages.push(data)
       }
       close = (): void => {
@@ -549,7 +557,7 @@ describe('Client', { timeout: 100 }, () => {
   test('subscribe - backoff', () => {
     const { client, sockets } = newClient()
 
-    client['connect']()
+    client.connect()
     const socket1 = sockets.get(0)
     socket1.close()
     expect(client['state'].type).toBe('backoff')
@@ -573,7 +581,7 @@ describe('Client', { timeout: 100 }, () => {
   test('subscribe - failed', () => {
     const { client, sockets } = newClient({ retryBehavior: () => -1 })
 
-    client['connect']()
+    client.connect()
     const socket1 = sockets.get(0)
     socket1.close()
     expect(client['state'].type).toBe('failed')
@@ -589,9 +597,10 @@ describe('Client', { timeout: 100 }, () => {
   test('subscribe - open out of order', () => {
     const { client, sockets } = newClient()
 
-    client['connect']()
+    subscribeWithMocks(client, 'default/foo')
     const socket = sockets.get(0)
     socket.openAndHandshake()
+    socket.acceptSubscribe('default/foo')
     socket.close()
     expect(client['state'].type).toBe('backoff')
 
@@ -604,7 +613,7 @@ describe('Client', { timeout: 100 }, () => {
   test('subscribe - double open', () => {
     const { client, sockets } = newClient()
 
-    client['connect']()
+    client.connect()
     const socket = sockets.get(0)
     socket.openAndHandshake()
     socket.open()
@@ -616,7 +625,7 @@ describe('Client', { timeout: 100 }, () => {
 
     const { client, sockets } = newClient()
 
-    client['connect']()
+    client.connect()
     const socket = sockets.get(0)
     socket.open()
     expect(socket.consumeMessage()).toEqual({ type: 'connection_init' })
@@ -628,7 +637,7 @@ describe('Client', { timeout: 100 }, () => {
     expectUncaughtException('unexpected binary data in message')
     const { client, sockets } = newClient()
 
-    client['connect']()
+    client.connect()
     const socket = sockets.get(0)
     socket.adapter.dispatchEvent(new MessageEvent('message', {
       data: new ArrayBuffer(0),
@@ -639,7 +648,7 @@ describe('Client', { timeout: 100 }, () => {
     expectUncaughtException('[aws-appsync-events] unknown error: UnsupportedOperation (Operation not supported through the realtime channel)')
     const { client, sockets } = newClient()
 
-    client['connect']()
+    client.connect()
     const socket = sockets.get(0)
     socket.openAndHandshake()
     socket.send({
@@ -657,7 +666,7 @@ describe('Client', { timeout: 100 }, () => {
     expectUncaughtException('unknown message: {"type":"foo","bar":123}')
     const { client, sockets } = newClient()
 
-    client['connect']()
+    client.connect()
     const socket = sockets.get(0)
     socket.openAndHandshake()
     socket.send({
@@ -671,7 +680,7 @@ describe('Client', { timeout: 100 }, () => {
     expectUncaughtException('unknown message: {"bar":123}')
     const { client, sockets } = newClient()
 
-    client['connect']()
+    client.connect()
     const socket = sockets.get(0)
     socket.openAndHandshake()
     socket.send({
@@ -736,7 +745,7 @@ describe('Client', { timeout: 100 }, () => {
     expectUncaughtException('[aws-appsync-events bug] subscribe_success for unknown sub')
     const { client, sockets } = newClient()
 
-    client['connect']()
+    client.connect()
     const socket = sockets.get(0)
     socket.openAndHandshake()
     socket.subscribeSuccess('foo')
@@ -746,13 +755,27 @@ describe('Client', { timeout: 100 }, () => {
     expectUncaughtException('[aws-appsync-events bug] subscribe_error for unknown sub')
     const { client, sockets } = newClient()
 
-    client['connect']()
+    client.connect()
     const socket = sockets.get(0)
     socket.openAndHandshake()
     socket.send({
       id: 'foo',
       type: 'subscribe_error',
     })
+  })
+
+  test('filter out events after unsub', () => {
+    const { client, sockets } = newClient()
+
+    const { sub, event } = subscribeWithMocks(client, 'default/foo')
+    const socket = sockets.get(0)
+    socket.openAndHandshake()
+    sub.unsubscribe()
+    const subId = socket.acceptSubscribe('default/foo')
+    socket.sendData(subId, { foo: 123 })
+    socket.acceptUnsubscribe(subId)
+
+    expect(event).not.toBeCalled()
   })
 
   test('unsubscribe - connecting', () => {
@@ -876,12 +899,12 @@ describe('Client', { timeout: 100 }, () => {
   })
 
   test('unsubscribe - connected - failed', () => {
-    const { client, sockets } = newClient({ retryBehavior: exponentialBackoffRetryBehavior(0) })
+    const { client, sockets } = newClient({ retryBehavior: () => -1, idleConnectionKeepAliveTimeMs: 20 })
 
     const { sub, established, error } = subscribeWithMocks(client, 'default/foo')
 
     const socket = sockets.get(0)
-    socket.openAndHandshake()
+    socket.openAndHandshake(10)
     const subId = socket.acceptSubscribe('default/foo')
 
     sub.unsubscribe()
@@ -920,7 +943,7 @@ describe('Client', { timeout: 100 }, () => {
   test('2 sub, backoff, 1 unsub', () => {
     const { client, sockets } = newClient()
 
-    const { sub: sub1, event: event1, established: est1, error: err1 } = subscribeWithMocks(client, 'default/foo')
+    const { event: event1, established: est1, error: err1 } = subscribeWithMocks(client, 'default/foo')
     const { sub: sub2, event: event2, established: est2, error: err2 } = subscribeWithMocks(client, 'default/foo')
 
     const socket1 = sockets.get(0)
@@ -948,10 +971,54 @@ describe('Client', { timeout: 100 }, () => {
     expect(event2).not.toBeCalled()
   })
 
+  test('not finished unsubs cleared on disconnect', () => {
+    const { client, sockets } = newClient()
+
+    const { sub: sub1 } = subscribeWithMocks(client, 'default/foo')
+    subscribeWithMocks(client, 'default/bar')
+    const socket1 = sockets.get(0)
+    socket1.openAndHandshake()
+    expect(client['state'].type).toBe('connected')
+    sub1.unsubscribe()
+    socket1.consumeSubscribeRequest('default/foo')
+    socket1.consumeSubscribeRequest('default/bar')
+    socket1.close()
+
+    vi.runAllTimers()
+
+    const socket2 = sockets.get(1)
+    socket2.openAndHandshake()
+    socket2.consumeSubscribeRequest('default/bar')
+  })
+
+  test('not finished unsub renewed', () => {
+    const { client, sockets } = newClient()
+
+    const { sub: sub1 } = subscribeWithMocks(client, 'default/foo')
+    subscribeWithMocks(client, 'default/bar')
+    const socket1 = sockets.get(0)
+    socket1.openAndHandshake()
+    expect(client['state'].type).toBe('connected')
+    sub1.unsubscribe()
+    socket1.consumeSubscribeRequest('default/foo')
+    socket1.consumeSubscribeRequest('default/bar')
+
+    subscribeWithMocks(client, 'default/foo')
+
+    socket1.close()
+
+    vi.runAllTimers()
+
+    const socket2 = sockets.get(1)
+    socket2.openAndHandshake()
+    socket2.consumeSubscribeRequest('default/foo')
+    socket2.consumeSubscribeRequest('default/bar')
+  })
+
   test('backoff eager unsub', () => {
     const { client, sockets } = newClient()
 
-    client['connect']()
+    client.connect()
     const socket = sockets.get(0)
     socket.close()
     expect(client['state'].type).toBe('backoff')
@@ -1006,7 +1073,7 @@ describe('Client', { timeout: 100 }, () => {
     expect(event).not.toBeCalled()
   })
 
-  test('unsubscribe error', (t) => {
+  test('unsubscribe error', () => {
     expectUncaughtException('[aws-appsync-events bug] unsubscribe error: UnknownOperationError (Unknown operation id)')
     const { client, sockets } = newClient()
 
@@ -1082,11 +1149,12 @@ describe('Client', { timeout: 100 }, () => {
   })
 
   test('timeout retry', () => {
-    const { client, sockets } = newClient({ retryBehavior: exponentialBackoffRetryBehavior(1) })
+    const { client, sockets } = newClient({ retryBehavior: simpleRetryBehavior(1) })
 
-    client['connect']()
+    subscribeWithMocks(client, 'default/foo')
     const socket1 = sockets.get(0)
     socket1.openAndHandshake()
+    socket1.acceptSubscribe('default/foo')
     expect(client['state'].type).toBe('connected')
 
     vi.runAllTimers()
@@ -1095,6 +1163,7 @@ describe('Client', { timeout: 100 }, () => {
 
     const socket2 = sockets.get(1)
     socket2.openAndHandshake()
+    socket2.acceptSubscribe('default/foo')
     expect(client['state'].type).toBe('connected')
     
     vi.runAllTimers()
@@ -1102,9 +1171,9 @@ describe('Client', { timeout: 100 }, () => {
   })
 
   test('keepalive timeout', () => {
-    const { client, sockets } = newClient({ retryBehavior: exponentialBackoffRetryBehavior(0) })
+    const { client, sockets } = newClient({ retryBehavior: simpleRetryBehavior(0) })
 
-    client['connect']()
+    client.connect()
     const socket1 = sockets.get(0)
     socket1.openAndHandshake(100)
     expect(client['state'].type).toBe('connected')
@@ -1144,7 +1213,7 @@ describe('Client', { timeout: 100 }, () => {
     const onStateChanged = vi.fn()
     const { client, sockets } = newClient({ onStateChanged })
 
-    client['connect']()
+    client.connect()
     const socket = sockets.get(0)
     socket.open()
     expect(onStateChanged).not.toBeCalled()
@@ -1156,7 +1225,7 @@ describe('Client', { timeout: 100 }, () => {
     const onStateChanged = vi.fn()
     const { client, sockets } = newClient({ onStateChanged })
 
-    client['connect']()
+    client.connect()
     const socket = sockets.get(0)
     socket.close()
     expect(onStateChanged).toHaveBeenCalledExactlyOnceWith('backoff')
@@ -1166,7 +1235,7 @@ describe('Client', { timeout: 100 }, () => {
     const onStateChanged = vi.fn()
     const { client, sockets } = newClient({ onStateChanged, retryBehavior: () => -1 })
 
-    client['connect']()
+    client.connect()
     const socket = sockets.get(0)
     socket.close()
     expect(onStateChanged).toHaveBeenCalledExactlyOnceWith('failed')
@@ -1209,5 +1278,106 @@ describe('Client', { timeout: 100 }, () => {
     const socket2 = sockets.get(1)
     socket2.openAndHandshake()
     expect(socket2.consumeMessage()).toBeUndefined()
+  })
+
+  test('close idle connection - timeout', () => {
+    const onStateChanged = vi.fn()
+    const { client, sockets } = newClient({ onStateChanged })
+
+    client.connect()
+    const socket = sockets.get(0)
+    socket.openAndHandshake()
+    onStateChanged.mockClear()
+
+    vi.runAllTimers()
+
+    expect(client['state'].type).toBe('idle')
+    expect(onStateChanged).toHaveBeenCalledExactlyOnceWith('idle')
+  })
+
+  test.for([true, false])('close idle connection - connecting (immediate %s)', (immediate) => {
+    const onStateChanged = vi.fn()
+    const { client, sockets } = newClient({ onStateChanged, idleConnectionKeepAliveTimeMs: !immediate && 1 })
+
+    const { sub } = subscribeWithMocks(client, 'default/foo')
+    const socket = sockets.get(0)
+    expect(client['state'].type).toBe('connecting')
+    sub.unsubscribe()
+
+    if (!immediate) {
+      vi.runAllTimers()
+    }
+
+    expect(client['state'].type).toBe('idle')
+    expect(onStateChanged).toHaveBeenCalledExactlyOnceWith('idle')
+  })
+
+  test.for([true, false])('close idle connection - handshaking (immediate %s)', (immediate) => {
+    const onStateChanged = vi.fn()
+    const { client, sockets } = newClient({ onStateChanged, idleConnectionKeepAliveTimeMs: !immediate && 1 })
+
+    const { sub } = subscribeWithMocks(client, 'default/foo')
+    const socket = sockets.get(0)
+    socket.open()
+    expect(socket.consumeMessage()).toEqual({ type: 'connection_init' })
+    expect(client['state'].type).toBe('handshaking')
+    sub.unsubscribe()
+
+    if (!immediate) {
+      vi.runAllTimers()
+    }
+
+    expect(client['state'].type).toBe('idle')
+    expect(onStateChanged).toHaveBeenCalledExactlyOnceWith('idle')
+  })
+
+  test.for([true, false])('close idle connection - connected (immediate %s)', (immediate) => {
+    const onStateChanged = vi.fn()
+    const { client, sockets } = newClient({ onStateChanged, idleConnectionKeepAliveTimeMs: !immediate && 1 })
+
+    const { sub } = subscribeWithMocks(client, 'default/foo')
+    const socket = sockets.get(0)
+    socket.openAndHandshake()
+    onStateChanged.mockClear()
+
+    expect(client['state'].type).toBe('connected')
+    const subId = socket.acceptSubscribe('default/foo')
+    sub.unsubscribe()
+
+    if (!immediate) {
+      socket.consumeUnsubscribeRequest(subId)
+      vi.runAllTimers()
+    } else {
+      // we don't expect unsubscribe message, because socket should be just closed
+      expect(socket.consumeMessage()).toBeUndefined()
+    }
+
+    expect(client['state'].type).toBe('idle')
+    expect(onStateChanged).toHaveBeenCalledExactlyOnceWith('idle')
+  })
+
+  test('idle timer reset', () => {
+    const { client, sockets } = newClient({ retryBehavior: () => -1, idleConnectionKeepAliveTimeMs: 20 })
+
+    const { sub: sub1 } = subscribeWithMocks(client, 'default/foo')
+    const socket = sockets.get(0)
+    socket.openAndHandshake()
+    const subId = socket.acceptSubscribe('default/foo')
+    sub1.unsubscribe()
+    socket.consumeUnsubscribeRequest(subId)
+
+    vi.advanceTimersByTime(10)
+
+    subscribeWithMocks(client, 'default/bar')
+    vi.advanceTimersByTime(50)
+    socket.acceptSubscribe('default/bar')
+    expect(client['state'].type).toBe('connected')
+  })
+
+  test('do not open connection without subs and keepalive', () => {
+    const { client } = newClient({ idleConnectionKeepAliveTimeMs: false })
+
+    client.connect()
+    expect(client['state'].type).toBe('idle')
   })
 })

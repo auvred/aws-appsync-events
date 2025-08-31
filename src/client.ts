@@ -46,11 +46,17 @@ type Authorization = ApiKeyAuthorization
 
 type SubListener = {
   event: (event: unknown) => void
-  error: ((error: Error) => void) | undefined
+  error: (error: Error) => void
   established: (() => void) | undefined
 }
 
-export type ClientState = 'connected' | 'backoff' | 'failed'
+type Sub = {
+  id: string
+  isEstablished: boolean
+  listeners: Set<SubListener>
+}
+
+export type ClientState = 'idle' | 'connected' | 'backoff' | 'failed'
 export type ClientOpts = {
   /**
    * Function that determines the delay between retry attempts.
@@ -63,9 +69,25 @@ export type ClientOpts = {
    * @returns The delay in milliseconds before the next retry attempt,
    * or -1 to stop retrying and treat the connection as failed.
    */
+   // TODO: return false
   retryBehavior?: ((attempt: number) => number) | undefined
 
   onStateChanged?: ((newState: ClientState) => void) | undefined
+
+  /**
+   * The duration (in milliseconds) to keep the underlying WebSocket connection
+   * alive when there are no active subscriptions.
+   *
+   * If a new subscription is started within this time, the existing connection
+   * will be reused. Otherwise, once the duration has elapsed, the connection
+   * will be closed.
+   *
+   * Set to `false` to disable idle keep-alive entirely, meaning the connection
+   * will be closed immediately when the last subscription ends.
+   *
+   * @default 5000 (5 seconds)
+   */
+  idleConnectionKeepAliveTimeMs?: number | false | undefined
 }
 
 export type SubscribeOpts = {
@@ -133,12 +155,37 @@ export class Client {
   readonly realtimeEndpoint: string
   private wsCtor: WebSocketAdapterConstructor = WebSocket
 
-  private readonly subsByChannelName = new Map<string, {
-    id: string
-    isEstablished: boolean
-    listeners: Set<SubListener>
-  }>()
-  private readonly channelNamesById= new Map<string, string>()
+  private readonly subsByChannelName = (client => new (class _ extends Map<string, Sub> {
+    override set(key: string, value: Sub) {
+      switch (client.state.type) {
+        case 'connecting':
+        case 'handshaking':
+        case 'connected':
+          if (client.state.idleTimer != null) {
+            client.state.idleTimer.cancel()
+            client.state.idleTimer = null
+          }
+      }
+      return super.set(key, value)
+    }
+    override delete(key: string) {
+      const res = super.delete(key)
+      if (res && this.size === 0) {
+        switch (client.state.type) {
+          case 'connecting':
+          case 'handshaking':
+          case 'connected':
+            if (client.idleConnectionKeepAliveTimeMs === false) {
+              client.state.closeWs()
+            } else {
+              client.state.idleTimer = new ResettableTimer(client.idleConnectionKeepAliveTimeMs, client.state.closeWs)
+            }
+        }
+      }
+      return res
+    }
+  })())(this)
+  private readonly channelNamesById = new Map<string, string>()
   private subById = (id: string) => {
     const channel = this.channelNamesById.get(id)
     if (channel == null) {
@@ -150,19 +197,26 @@ export class Client {
 
   private readonly retryBehavior: (attempt: number) => number
   private readonly onStateChanged: ((newState: ClientState) => void) | null
+  private readonly idleConnectionKeepAliveTimeMs: number | false
 
   private state: {
     type: 'idle'
   } | {
     type: 'connecting'
     ws: WebSocketAdapter
+    idleTimer: ResettableTimer | null
+    closeWs: () => void
   } | {
     type: 'handshaking'
     ws: WebSocketAdapter
+    idleTimer: ResettableTimer | null
+    closeWs: () => void
   } | {
     type: 'connected'
     ws: WebSocketAdapter
     timeoutTimer: ResettableTimer
+    idleTimer: ResettableTimer | null
+    closeWs: () => void
   } | {
     type: 'backoff'
     attempt: number
@@ -175,18 +229,20 @@ export class Client {
   constructor(endpoint: string, readonly authorization: Authorization, {
     retryBehavior = exponentialBackoffRetryBehavior(3),
     onStateChanged,
+    idleConnectionKeepAliveTimeMs = 5_000,
   }: ClientOpts = {}) {
     const endpoints = parseEndpoint(endpoint)
     this.httpEndpoint = endpoints.http
     this.realtimeEndpoint = endpoints.realtime
     this.retryBehavior = retryBehavior
     this.onStateChanged = onStateChanged ?? null
+    this.idleConnectionKeepAliveTimeMs = idleConnectionKeepAliveTimeMs
   }
 
   subscribe = (channel: string, { event, error, established }: SubscribeOpts) => {
     channel = normalizeChannel(channel)
     // TODO: dedupe by auth type
-    // TODO: test what if two subscriptions are created for the same channel
+    // TODO: test what if two subscriptions are created for the same channel (in AppSync)
     let sub = this.subsByChannelName.get(channel)
     let firstSub = false
     if (sub == null) {
@@ -202,7 +258,6 @@ export class Client {
 
     const tryCleanupListeners = () => {
       if (sub.listeners.size === 1) {
-        // TODO: should we close connection?
         this.subsByChannelName.delete(channel)
         this.channelNamesById.delete(sub.id)
       } else {
@@ -239,6 +294,9 @@ export class Client {
             authorization: this.authorizationHeaders,
           }))
         } else {
+          if (this.pendingUnsubIds.delete(sub.id)) {
+            listener.established = established
+          }
           established?.()
         }
         break
@@ -266,10 +324,10 @@ export class Client {
         case 'connected': {
           const cleanup = () => {
             tryCleanupListeners()
-            // It's safe to use type assertion here because listener.established
-            // is always called synchronously by the 'subscribe_success' handler,
-            // which can only be invoked when the state is 'connected'.
-            ;(this.state as typeof this.state & { type: 'connected' }).ws.send(JSON.stringify({ type: 'unsubscribe', id: sub.id }))
+            // tryCleanupListeners has side-effect, so the state could be changed
+            if (this.state.type === 'connected') {
+              this.state.ws.send(JSON.stringify({ type: 'unsubscribe', id: sub.id }))
+            }
           }
           if (sub.isEstablished) {
             cleanup()
@@ -295,14 +353,14 @@ export class Client {
     }
 
     return {
-      unsubscribe: () => {
-        unsubscribe()
-      },
+      unsubscribe,
     }
   }
 
-  private connect = () => {
-    // TODO: should we still open connection if there is no active subs
+  connect = () => {
+    if (this.idleConnectionKeepAliveTimeMs === false && this.subsByChannelName.size === 0) {
+      return
+    }
     let attempt = 0
     switch (this.state.type) {
       // 'idle' - connect
@@ -327,9 +385,15 @@ export class Client {
       `header-${authPayload}`,
     ])
 
+    const closeWs = () => {
+      ws.close()
+      connectionEnded(true)
+    }
+
     this.state = {
       type: 'connecting',
       ws,
+      closeWs,
     }
 
     const onOpen = () => {
@@ -339,6 +403,7 @@ export class Client {
       this.state = {
         type: 'handshaking',
         ws,
+        closeWs,
       }
       ws.send(JSON.stringify({ type: 'connection_init' }))
     }
@@ -360,6 +425,7 @@ export class Client {
         // 'backoff', 'failed' - should never happen: the 'message' listener is
         // removed before leaving the 'connected' state
         case 'handshaking':
+          // TODO: ack timeout
           if (message.type !== 'connection_ack') {
             throw new Error(`[aws-appsync-events bug] handshake error: expected "connection_ack" but got ${JSON.stringify(message.type)}`)
           }
@@ -368,8 +434,21 @@ export class Client {
             ws,
             timeoutTimer: new ResettableTimer(message.connectionTimeoutMs, () => {
               ws.close()
-              onClose()
+              connectionEnded(false)
             }),
+            idleTimer: null,
+            closeWs,
+          }
+          if (this.subsByChannelName.size === 0) {
+            // - if connect was called explicitly and idleConnectionKeepAliveTimeMs is false,
+            // connect early returns
+            // - if connect was called implicitly (via subscribe), idleConnectionKeepAliveTimeMs === false
+            // situation is already handled (because the current state is 'handshaking')
+            // TODO: remove this condition after double check
+            if (this.idleConnectionKeepAliveTimeMs === false) {
+              throw new Error('impossible situation')
+            }
+            this.state.idleTimer = new ResettableTimer(this.idleConnectionKeepAliveTimeMs as number, closeWs)
           }
           for (const [channel, sub] of this.subsByChannelName) {
             ws.send(JSON.stringify({
@@ -393,12 +472,10 @@ export class Client {
               }
               sub.isEstablished = true
               for (const listener of sub.listeners) {
-                // !!!
                 listener.established?.()
               }
               break
             }
-            // TODO: do not resub for errored subs
             case 'subscribe_error': {
               const sub = this.subById(message.id)
               if (sub == null) {
@@ -406,8 +483,7 @@ export class Client {
               }
               const error = new Error('Subscribe error' + normalizeErrors(message.errors))
               for (const listener of sub.listeners) {
-                // !!!
-                listener.error?.(error)
+                listener.error(error)
               }
               break
             }
@@ -416,8 +492,9 @@ export class Client {
               if (channel == null) {
                 break
               }
+              const event = JSON.parse(message.event)
               for (const listener of this.subsByChannelName.get(channel)!.listeners) {
-                listener.event?.(JSON.parse(message.event))
+                listener.event?.(event)
               }
               break
             }
@@ -433,27 +510,33 @@ export class Client {
       }
     }
 
-    const onClose = () => {
+    const connectionEnded = (graceful: boolean) => {
       // TODO: handle manual close
       removeEventListeners()
 
       switch (this.state.type) {
         case 'connected':
           this.state.timeoutTimer.cancel()
-        case 'idle':
         case 'connecting':
-        case 'handshaking': {
+        case 'handshaking': 
+          this.state.idleTimer?.cancel()
+        case 'idle': {
           for (const subId of this.pendingUnsubIds) {
             const channel = this.channelNamesById.get(subId)!
             this.subsByChannelName.delete(channel)
             this.channelNamesById.delete(subId)
+          }
+          if (graceful) {
+            this.state = { type: 'idle' }
+            this.onStateChanged?.('idle')
+            break
           }
           const newAttempt = attempt + 1
           const msToSleep = this.retryBehavior(newAttempt)
           if (msToSleep < 0) {
             this.state = { type: 'failed' }
             this.onStateChanged?.('failed')
-            return
+            break
           }
           this.state = {
             type: 'backoff',
@@ -467,6 +550,8 @@ export class Client {
           // should never happen
       }
     }
+
+    const onClose = () => connectionEnded(false)
 
     ws.addEventListener('open', onOpen)
     ws.addEventListener('message', onMessage)
