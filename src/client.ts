@@ -37,22 +37,6 @@ function normalizeErrors(errors: unknown) {
                 : '')
 }
 
-interface PromiseWithResolvers<T> {
-    promise: Promise<T>;
-    resolve: (value: T | PromiseLike<T>) => void;
-    reject: (reason?: any) => void;
-}
-
-export function promiseWithResolversPolyfill<T>(): PromiseWithResolvers<T> {
-  let resolve!: PromiseWithResolvers<T>['resolve'], reject!: PromiseWithResolvers<T>['reject']
-  return { 
-    promise: new (Promise as PromiseConstructor)<T>((res, rej) => (resolve = res, reject = rej)), 
-    resolve, 
-    reject,
-  }
-}
-const promiseWithResolvers: <T>() => PromiseWithResolvers<T> = (Promise as any).withResolvers?.bind(Promise) ?? promiseWithResolversPolyfill
-
 type ApiKeyAuthorization = {
   type: 'API_KEY'
   key: string
@@ -60,7 +44,11 @@ type ApiKeyAuthorization = {
 
 type Authorization = ApiKeyAuthorization
 
-type Listener = (event: unknown) => void
+type SubListener = {
+  event: (event: unknown) => void
+  error: ((error: Error) => void) | undefined
+  established: (() => void) | undefined
+}
 
 export type ClientState = 'connected' | 'backoff' | 'failed'
 export type ClientOpts = {
@@ -78,6 +66,25 @@ export type ClientOpts = {
   retryBehavior?: ((attempt: number) => number) | undefined
 
   onStateChanged?: ((newState: ClientState) => void) | undefined
+}
+
+export type SubscribeOpts = {
+  /**
+   * Called when a new event is received from the subscription.
+   */
+  event: (event: unknown) => void
+  /**
+   * Called when the subscription fails.
+   * This is invoked only once, since invalid subscriptions
+   * are not retried.
+   */
+  error?: ((err: Error) => void) | undefined
+  /**
+   * Called when the subscription has been successfully established.
+   * May be invoked multiple times, if the underlying connection is
+   * re-established after a retry.
+   */
+  established?: () => void
 }
 
 // https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
@@ -126,17 +133,12 @@ export class Client {
   readonly realtimeEndpoint: string
   private wsCtor: WebSocketAdapterConstructor = WebSocket
 
-  private readonly subsByChannelName: Map<string, {
+  private readonly subsByChannelName = new Map<string, {
     id: string
-    promise: Promise<void>
-    /** Calls to resolve are idempodent */
-    resolve: () => void
-    /** Calls to reject are idempodent */
-    reject: (e: Error) => void
-    listeners: Set<Listener>
-    subscribeRequestSent: boolean
-  }> = new Map()
-  private readonly channelNamesById: Map<string, string> = new Map()
+    isEstablished: boolean
+    listeners: Set<SubListener>
+  }>()
+  private readonly channelNamesById= new Map<string, string>()
   private subById = (id: string) => {
     const channel = this.channelNamesById.get(id)
     if (channel == null) {
@@ -144,6 +146,7 @@ export class Client {
     }
     return this.subsByChannelName.get(channel)!
   }
+  private readonly pendingUnsubIds = new Set<string>()
 
   private readonly retryBehavior: (attempt: number) => number
   private readonly onStateChanged: ((newState: ClientState) => void) | null
@@ -180,51 +183,65 @@ export class Client {
     this.onStateChanged = onStateChanged ?? null
   }
 
-  subscribe = (channel: string, { next, error }: {
-    // TODO: make required?
-    next?: (event: unknown) => void
-    error?: ((err: Error) => void) | undefined
-  }) => {
+  subscribe = (channel: string, { event, error, established }: SubscribeOpts) => {
     channel = normalizeChannel(channel)
+    // TODO: dedupe by auth type
+    // TODO: test what if two subscriptions are created for the same channel
     let sub = this.subsByChannelName.get(channel)
     let firstSub = false
     if (sub == null) {
       firstSub = true
       this.subsByChannelName.set(channel, sub = {
+        // TODO: polyfill for older enrironments
+        // https://caniuse.com/mdn-api_crypto_randomuuid
         id: crypto.randomUUID(),
+        isEstablished: false,
         listeners: new Set(),
-        subscribeRequestSent: false,
-        ...promiseWithResolvers<void>(),
       })
     }
 
-    const eagerUnsub = promiseWithResolvers<void>()
+    const tryCleanupListeners = () => {
+      if (sub.listeners.size === 1) {
+        // TODO: should we close connection?
+        this.subsByChannelName.delete(channel)
+        this.channelNamesById.delete(sub.id)
+      } else {
+        sub.listeners.delete(listener)
+      }
+    }
 
-    const listener: Listener = event => {
-      next?.(event)
+    const listener: SubListener = {
+      event,
+      error: err => {
+        tryCleanupListeners()
+        error?.(err)
+      },
+      established,
     }
     sub.listeners.add(listener)
     this.channelNamesById.set(sub.id, channel)
 
     switch (this.state.type) {
+      // We can ignore 'connecting', 'handshaking' and 'backoff', because when
+      // they are active, there is no established WebSocket connection, so 
+      // the 'subscribe' message cannot be sent. When the state enter 'connected',
+      // all pending subscriptions will be initiated/renewed.
       case 'idle':
+      case 'failed':
         this.connect()
-      case 'connecting':
-      case 'backoff':
-      case 'handshaking':
         break
       case 'connected':
         if (firstSub) {
-          sub.subscribeRequestSent = true
           this.state.ws.send(JSON.stringify({
             type: 'subscribe',
             id: sub.id,
             channel,
             authorization: this.authorizationHeaders,
           }))
+        } else {
+          established?.()
         }
         break
-      case 'failed': // TODO
     }
 
     let unsubscribed = false
@@ -234,55 +251,50 @@ export class Client {
       }
       unsubscribed = true
 
-      sub.listeners.delete(listener)
-
-      const tryCleanupListeners = () => {
-        if (sub.listeners.size === 0) {
-          // TODO: should we close connection?
-          this.subsByChannelName.delete(channel)
-          this.channelNamesById.delete(sub.id)
-        }
-      }
-
       switch (this.state.type) {
-        // case 'idle' - should never happen: unsubscribe can be called only
-        // after first call to connect
+        // 'idle' - should never happen: unsubscribe can be called only
+        // after the first call to connect.
+        //
+        // If the state leaves 'connected', we have no reason to send 
+        // an unsubscribe request. All subscriptions are cancelled once
+        // the WebSocket is closed.
         case 'backoff':
-          // If the state went out of 'connected', we have no reason to send
-          // unsubscribe request. All subscriptions are cancelled since WebSocket
-          // is closed.
         case 'connecting':
         case 'handshaking':
           tryCleanupListeners()
-          eagerUnsub.resolve()
           break
-        case 'connected':
-          // We don't handle rejection, because rejection of this promise
-          // indicates subscribe_error. In that case, we don't need to
-          // explicitly unsubscribe.
-          void sub.promise.then(() => {
-            // We defer cleanup until after sub.promise, because subscribe_success
-            // should find the current sub and call sub.resolve()
+        case 'connected': {
+          const cleanup = () => {
             tryCleanupListeners()
-            if (this.state.type !== 'connected') {
-              return
-            }
-            // If unsubscribe is sent at the same time as subscribe, it will be
-            // silently ignored. This is why we wait for the promise to resolve
-            // before unsubscribing.
-            this.state.ws.send(JSON.stringify({
-              type: 'unsubscribe',
-              id: sub.id,
-            }))
-          })
+            // It's safe to use type assertion here because listener.established
+            // is always called synchronously by the 'subscribe_success' handler,
+            // which can only be invoked when the state is 'connected'.
+            ;(this.state as typeof this.state & { type: 'connected' }).ws.send(JSON.stringify({ type: 'unsubscribe', id: sub.id }))
+          }
+          if (sub.isEstablished) {
+            cleanup()
+            break
+          }
+          // We don't handle subscribe_error. In that case, we don't need to
+          // explicitly unsubscribe.
+          //
+          // If unsubscribe is sent at the same time as subscribe, it will be
+          // silently ignored. This is why we wait for the sub to establish
+          // before unsubscribing.
+          listener.established = () => {
+            this.pendingUnsubIds.delete(sub.id)
+            cleanup()
+            established?.()
+          }
+          this.pendingUnsubIds.add(sub.id)
           break
+        }
         case 'failed': // TODO
           break
       }
     }
 
     return {
-      promise: Promise.race([sub.promise, eagerUnsub.promise]),
       unsubscribe: () => {
         unsubscribe()
       },
@@ -293,8 +305,8 @@ export class Client {
     // TODO: should we still open connection if there is no active subs
     let attempt = 0
     switch (this.state.type) {
-      case 'idle':
-        break
+      // 'idle' - connect
+      // 'failed' - reconnect
       case 'connecting':
       case 'handshaking':
       case 'connected':
@@ -322,6 +334,8 @@ export class Client {
 
     const onOpen = () => {
       ws.removeEventListener('open', onOpen)
+      // 'open' cannot be called after 'error' or 'close'; current state MUST
+      // be 'connecting'
       this.state = {
         type: 'handshaking',
         ws,
@@ -337,13 +351,13 @@ export class Client {
       const message = JSON.parse(event.data)
 
       switch (this.state.type) {
-        // case 'idle' - should never happen: the ws is created only after
+        // 'idle' - should never happen: the ws is created only after
         // entering the 'connecting' state
-        // case 'connecting' - should never happen: message cannot be delivered
+        //
+        // 'connecting' - should never happen: message cannot be delivered
         // before the 'open' state
-        // case 'backoff' - should never happen: the 'message' listener is
-        // removed before leaving the 'connected' state
-        // case 'failed' - should never happen: the 'message' listener is
+        //
+        // 'backoff', 'failed' - should never happen: the 'message' listener is
         // removed before leaving the 'connected' state
         case 'handshaking':
           if (message.type !== 'connection_ack') {
@@ -358,7 +372,6 @@ export class Client {
             }),
           }
           for (const [channel, sub] of this.subsByChannelName) {
-            sub.subscribeRequestSent = true
             ws.send(JSON.stringify({
               type: 'subscribe',
               id: sub.id,
@@ -378,16 +391,24 @@ export class Client {
               if (sub == null) {
                 throw new Error(`[aws-appsync-events bug] subscribe_success for unknown sub`)
               }
-              sub.resolve()
+              sub.isEstablished = true
+              for (const listener of sub.listeners) {
+                // !!!
+                listener.established?.()
+              }
               break
             }
+            // TODO: do not resub for errored subs
             case 'subscribe_error': {
               const sub = this.subById(message.id)
               if (sub == null) {
                 throw new Error(`[aws-appsync-events bug] subscribe_error for unknown sub`)
               }
               const error = new Error('Subscribe error' + normalizeErrors(message.errors))
-              sub.reject(error)
+              for (const listener of sub.listeners) {
+                // !!!
+                listener.error?.(error)
+              }
               break
             }
             case 'data': {
@@ -396,7 +417,7 @@ export class Client {
                 break
               }
               for (const listener of this.subsByChannelName.get(channel)!.listeners) {
-                listener(JSON.parse(message.event))
+                listener.event?.(JSON.parse(message.event))
               }
               break
             }
@@ -413,7 +434,6 @@ export class Client {
     }
 
     const onClose = () => {
-      // should cancel all existing subs
       // TODO: handle manual close
       removeEventListeners()
 
@@ -423,6 +443,11 @@ export class Client {
         case 'idle':
         case 'connecting':
         case 'handshaking': {
+          for (const subId of this.pendingUnsubIds) {
+            const channel = this.channelNamesById.get(subId)!
+            this.subsByChannelName.delete(channel)
+            this.channelNamesById.delete(subId)
+          }
           const newAttempt = attempt + 1
           const msToSleep = this.retryBehavior(newAttempt)
           if (msToSleep < 0) {
