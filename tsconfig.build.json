@@ -1,0 +1,30 @@
+{
+  "includes": ["./src/**/*.ts"],
+  // odd behavior: without specifying "files", tsc picks up files from tests/
+  // even though "includes" is restricted to only src/
+  "files": ["./src/index.ts"],
+  "compilerOptions": {
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noUncheckedIndexedAccess": true,
+    "strict": true,
+
+    "noEmit": true,
+    "skipLibCheck": true,
+    // TODO: enable
+    // "isolatedDeclarations": true,
+
+    "module": "node16",
+    "verbatimModuleSyntax": true,
+    "target": "es2016",
+    "lib": [
+      "es2016", 
+      "dom", // for URL
+    ],
+    "types": [],
+  },
+}
+

@@ -1,0 +1,17 @@
+{
+  "name": "aws-appsync-events",
+  "type": "module",
+  "scripts": {
+    "build": "tsdown",
+    "test": "vitest",
+    "type-check": "tsc --noEmit --project ./tsconfig.json && tsc --noEmit --project ./tsconfig.build.json"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/core": "^0.18.2",
+    "@types/node": "^24.3.0",
+    "@vitest/coverage-v8": "3.2.4",
+    "tsdown": "^0.14.2",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}
