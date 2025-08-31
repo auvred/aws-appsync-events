@@ -1,1 +1,6 @@
-export { Client, type ClientOpts, exponentialBackoffRetryBehavior } from './client.js'
+export { 
+  type ClientOpts, 
+  type ClientState,
+  Client, 
+  exponentialBackoffRetryBehavior 
+} from './client.js'

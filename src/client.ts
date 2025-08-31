@@ -43,15 +43,15 @@ interface PromiseWithResolvers<T> {
     reject: (reason?: any) => void;
 }
 
-const promiseWithResolvers: <T>() => PromiseWithResolvers<T> = (Promise as any).withResolvers?.bind(Promise) ?? (<T>() => {
-  let resolve: PromiseWithResolvers<T>['resolve'], reject: PromiseWithResolvers<T>['reject']
-  const promise = new (Promise as PromiseConstructor)<T>((res, rej) => {
-    resolve = res
-    reject = rej
-  })
-  // @ts-expect-error - use before assign
-  return { promise, resolve, reject }
-})
+export function promiseWithResolversPolyfill<T>(): PromiseWithResolvers<T> {
+  let resolve!: PromiseWithResolvers<T>['resolve'], reject!: PromiseWithResolvers<T>['reject']
+  return { 
+    promise: new (Promise as PromiseConstructor)<T>((res, rej) => (resolve = res, reject = rej)), 
+    resolve, 
+    reject,
+  }
+}
+const promiseWithResolvers: <T>() => PromiseWithResolvers<T> = (Promise as any).withResolvers?.bind(Promise) ?? promiseWithResolversPolyfill
 
 type ApiKeyAuthorization = {
   type: 'API_KEY'
@@ -62,6 +62,7 @@ type Authorization = ApiKeyAuthorization
 
 type Listener = (event: unknown) => void
 
+export type ClientState = 'connected' | 'backoff' | 'failed'
 export type ClientOpts = {
   /**
    * Function that determines the delay between retry attempts.
@@ -75,22 +76,8 @@ export type ClientOpts = {
    * or -1 to stop retrying and treat the connection as failed.
    */
   retryBehavior?: ((attempt: number) => number) | undefined
-  /**
-   * Callback invoked when the client encounters an unexpected but non-fatal error.
-   * 
-   * This hook exists for resiliency: it allows the client to keep running even if
-   * something goes wrong internally. All errors emitted here should be considered
-   * library bugs and reported to the issue tracker so they can be fixed.
-   *
-   * It's strongly recommended to forward these errors to your error tracking
-   * system (e.g. Sentry, Datadog) so they don't go unnoticed.
-   *
-   * By default (if no callback is provided), such errors will be printed with
-   * `console.error`.
-   *
-   * @param err The error that occurred.
-   */
-  onSilentError?: ((err: Error) => void) | undefined
+
+  onStateChanged?: ((newState: ClientState) => void) | undefined
 }
 
 // https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
@@ -155,11 +142,11 @@ export class Client {
     if (channel == null) {
       return null
     }
-    return this.subsByChannelName.get(channel) ?? null
+    return this.subsByChannelName.get(channel)!
   }
 
   private readonly retryBehavior: (attempt: number) => number
-  private readonly onSilentError: (err: Error) => void
+  private readonly onStateChanged: ((newState: ClientState) => void) | null
 
   private state: {
     type: 'idle'
@@ -184,13 +171,13 @@ export class Client {
 
   constructor(endpoint: string, readonly authorization: Authorization, {
     retryBehavior = exponentialBackoffRetryBehavior(3),
-    onSilentError = console.error,
+    onStateChanged,
   }: ClientOpts = {}) {
     const endpoints = parseEndpoint(endpoint)
     this.httpEndpoint = endpoints.http
     this.realtimeEndpoint = endpoints.realtime
     this.retryBehavior = retryBehavior
-    this.onSilentError = onSilentError
+    this.onStateChanged = onStateChanged ?? null
   }
 
   subscribe = (channel: string, { next, error }: {
@@ -260,6 +247,10 @@ export class Client {
       switch (this.state.type) {
         // case 'idle' - should never happen: unsubscribe can be called only
         // after first call to connect
+        case 'backoff':
+          // If the state went out of 'connected', we have no reason to send
+          // unsubscribe request. All subscriptions are cancelled since WebSocket
+          // is closed.
         case 'connecting':
         case 'handshaking':
           tryCleanupListeners()
@@ -285,8 +276,6 @@ export class Client {
             }))
           })
           break
-        case 'backoff': // when it subscribed? before network failure or after
-          break
         case 'failed': // TODO
           break
       }
@@ -301,6 +290,7 @@ export class Client {
   }
 
   private connect = () => {
+    // TODO: should we still open connection if there is no active subs
     let attempt = 0
     switch (this.state.type) {
       case 'idle':
@@ -340,8 +330,7 @@ export class Client {
     }
     const onMessage = (event: MessageEvent) => {
       if (typeof event.data !== 'string') {
-        this.onSilentError(new Error(`unexpected binary data in message: ${event.data}`))
-        return
+        throw new Error(`[aws-appsync-events bug] unexpected binary data in message: ${event.data}`)
       }
 
       // TODO: validate incoming data
@@ -358,8 +347,7 @@ export class Client {
         // removed before leaving the 'connected' state
         case 'handshaking':
           if (message.type !== 'connection_ack') {
-            this.onSilentError(new Error(`handshake error: expected "connection_ack" but got ${JSON.stringify(message.type)}`))
-            break
+            throw new Error(`[aws-appsync-events bug] handshake error: expected "connection_ack" but got ${JSON.stringify(message.type)}`)
           }
           this.state = {
             type: 'connected',
@@ -378,20 +366,31 @@ export class Client {
               authorization: this.authorizationHeaders,
             }))
           }
+          this.onStateChanged?.('connected')
           break
         case 'connected':
           switch (message.type) {
             case 'ka':
               this.state.timeoutTimer.reset()
               break
-            case 'subscribe_success':
-              this.subById(message.id)!.resolve()
+            case 'subscribe_success': {
+              const sub = this.subById(message.id)
+              if (sub == null) {
+                throw new Error(`[aws-appsync-events bug] subscribe_success for unknown sub`)
+              }
+              sub.resolve()
               break
-            case 'subscribe_error':
+            }
+            case 'subscribe_error': {
+              const sub = this.subById(message.id)
+              if (sub == null) {
+                throw new Error(`[aws-appsync-events bug] subscribe_error for unknown sub`)
+              }
               const error = new Error('Subscribe error' + normalizeErrors(message.errors))
-              this.subById(message.id)!.reject(error)
+              sub.reject(error)
               break
-            case 'data':
+            }
+            case 'data': {
               const channel = this.channelNamesById.get(message.id)
               if (channel == null) {
                 break
@@ -400,16 +399,15 @@ export class Client {
                 listener(JSON.parse(message.event))
               }
               break
+            }
             case 'unsubscribe_success':
               break
             case 'unsubscribe_error':
-              this.onSilentError(new Error('Unsubscribe error' + normalizeErrors(message.errors)))
-              break
+              throw new Error('[aws-appsync-events bug] unsubscribe error' + normalizeErrors(message.errors))
             case 'error':
-              throw new Error('Unknown error' + normalizeErrors(message.errors))
+              throw new Error('[aws-appsync-events] unknown error' + normalizeErrors(message.errors))
             default:
-              this.onSilentError(new Error(`unknown message: ${JSON.stringify(message)}`))
-              break
+              throw new Error(`[aws-appsync-events] unknown message: ${JSON.stringify(message)}`)
           }
       }
     }
@@ -429,12 +427,14 @@ export class Client {
           const msToSleep = this.retryBehavior(newAttempt)
           if (msToSleep < 0) {
             this.state = { type: 'failed' }
+            this.onStateChanged?.('failed')
             return
           }
           this.state = {
             type: 'backoff',
             attempt: newAttempt,
           }
+          this.onStateChanged?.('backoff')
           setTimeout(this.connect, msToSleep)
           break
         }
@@ -498,20 +498,5 @@ export class Client {
           'x-api-key': this.authorization.key,
         }
     }
-  }
-}
-
-function assert(x: unknown): asserts x {
-  if (!x) {
-    throw new Error(`assertion failed: ${String(x)}`)
-  }
-}
-function nullThrows<T>(x: T): NonNullable<T> {
-  assert(x)
-  return x
-}
-function assertEquals<A, E extends A>(actual: A, expected: E): asserts actual is E {
-  if (actual !== expected) {
-    throw new Error(`assertion failed: ${String(actual)} (actual) !== ${String(expected)} (expected)`)
   }
 }

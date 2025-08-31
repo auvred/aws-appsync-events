@@ -1,7 +1,27 @@
 import { expect, describe, test, vi, afterEach, beforeEach, onTestFinished } from 'vitest'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { Client, exponentialBackoffRetryBehavior, parseEndpoint, ResettableTimer, type ClientOpts, type WebSocketAdapter, type WebSocketAdapterConstructor } from '../src/client.js'
+import { Client, exponentialBackoffRetryBehavior, parseEndpoint, promiseWithResolversPolyfill, ResettableTimer, type ClientOpts, type WebSocketAdapter, type WebSocketAdapterConstructor } from '../src/client.js'
 import * as util from 'node:util'
+
+function expectUncaughtException(msg: string): AsyncDisposable {
+  const onUncaughtException = vi.fn()
+  process.once('uncaughtException', onUncaughtException)
+  let disposed = false
+  onTestFinished(() => {
+    void process.removeListener('uncaughtException', onUncaughtException)
+    expect(disposed, `don't forget to "await using mockUncaughtException"`).toBeTruthy()
+  })
+  return {
+    async [Symbol.asyncDispose]() {
+      disposed = true
+      await sleep(0)
+      expect(onUncaughtException).toHaveBeenCalledOnce()
+      const err = onUncaughtException.mock.lastCall![0] 
+      expect(err).toBeInstanceOf(Error)
+      expect(err.message).toMatch(msg)
+    }
+  }
+}
 
 describe('parseEndpoint', () => {
   describe('provided', () => {
@@ -181,6 +201,36 @@ describe('parseEndpoint', () => {
   })
 })
 
+describe('promiseWithResolversPolyfill', () => {
+  test('resolve', async () => {
+    const then = vi.fn()
+    const err = vi.fn()
+    const { promise, resolve, reject } = promiseWithResolversPolyfill<string>()
+    void promise.then(then, err)
+    await sleep(0)
+    expect(then).not.toBeCalled()
+    expect(err).not.toBeCalled()
+    resolve('foo')
+    resolve('bar')
+    reject('baz')
+    await expect(promise).resolves.toBe('foo')
+  })
+
+  test('reject', async () => {
+    const then = vi.fn()
+    const err = vi.fn()
+    const { promise, resolve, reject } = promiseWithResolversPolyfill<string>()
+    void promise.then(then, err)
+    await sleep(0)
+    expect(then).not.toBeCalled()
+    expect(err).not.toBeCalled()
+    reject('foo')
+    reject('bar')
+    resolve('baz')
+    await expect(promise).rejects.toBe('foo')
+  })
+}, { timeout: 50 })
+
 describe('ResettableTimer', () => {
   beforeEach(() => {
     vi.useFakeTimers()
@@ -248,7 +298,7 @@ describe('ResettableTimer', () => {
   })
 })
 
-describe('Client', () => {
+describe('Client', { timeout: 100 }, () => {
   beforeEach(() => {
     vi.useFakeTimers()
   })
@@ -611,9 +661,10 @@ describe('Client', () => {
     expect(client['state'].type).toBe('connected')
   })
 
-  test('subscribe - message before handshake', () => {
-    const onSilentError = vi.fn()
-    const { client, sockets } = newClient({ onSilentError })
+  test('subscribe - message before handshake', async () => {
+    await using _ = expectUncaughtException('handshake error: expected "connection_ack" but got "subscribe_success"')
+
+    const { client, sockets } = newClient()
 
     client['connect']()
     const socket = sockets.get(0)
@@ -621,32 +672,21 @@ describe('Client', () => {
     expect(socket.consumeMessage()).toEqual({ type: 'connection_init' })
     expect(client['state'].type).toBe('handshaking')
     socket.subscribeSuccess('default/foo')
-
-    expect(onSilentError).toHaveBeenCalledOnce()
-    const err = onSilentError.mock.lastCall![0] 
-    expect(err).toBeInstanceOf(Error)
-    expect(err.message).toMatch('handshake error: expected "connection_ack" but got "subscribe_success"')
   })
 
-  test('unexpected binary message', () => {
-    const onSilentError = vi.fn()
-    const { client, sockets } = newClient({ onSilentError })
+  test('unexpected binary message', async () => {
+    await using _ = expectUncaughtException('unexpected binary data in message')
+    const { client, sockets } = newClient()
 
     client['connect']()
     const socket = sockets.get(0)
     socket.adapter.dispatchEvent(new MessageEvent('message', {
       data: new ArrayBuffer(0),
     }))
-    expect(onSilentError).toHaveBeenCalledOnce()
-    const err = onSilentError.mock.lastCall![0] 
-    expect(err).toBeInstanceOf(Error)
-    expect(err.message).toMatch('unexpected binary data in message')
   })
 
   test('unknown error', async () => {
-    const onUncaughtException = vi.fn()
-    process.once('uncaughtException', onUncaughtException)
-    onTestFinished(() => void process.removeListener('uncaughtException', onUncaughtException))
+    await using _ = expectUncaughtException('[aws-appsync-events] unknown error: UnsupportedOperation (Operation not supported through the realtime channel)')
     const { client, sockets } = newClient()
 
     client['connect']()
@@ -661,16 +701,11 @@ describe('Client', () => {
         }
       ]
     })
-    await sleep(0)
-    expect(onUncaughtException).toHaveBeenCalledOnce()
-    const err = onUncaughtException.mock.lastCall![0] 
-    expect(err).toBeInstanceOf(Error)
-    expect(err.message).toMatch('Unknown error: UnsupportedOperation (Operation not supported through the realtime channel)')
   })
 
   test('unknown message', async () => {
-    const onSilentError = vi.fn()
-    const { client, sockets } = newClient({ onSilentError })
+    await using _ = expectUncaughtException('unknown message: {"type":"foo","bar":123}')
+    const { client, sockets } = newClient()
 
     client['connect']()
     const socket = sockets.get(0)
@@ -680,15 +715,11 @@ describe('Client', () => {
       bar: 123,
     })
 
-    expect(onSilentError).toHaveBeenCalledOnce()
-    const err = onSilentError.mock.lastCall![0] 
-    expect(err).toBeInstanceOf(Error)
-    expect(err.message).toMatch('unknown message: {"type":"foo","bar":123}')
   })
 
   test('unknown message - without type', async () => {
-    const onSilentError = vi.fn()
-    const { client, sockets } = newClient({ onSilentError })
+    await using _ = expectUncaughtException('unknown message: {"bar":123}')
+    const { client, sockets } = newClient()
 
     client['connect']()
     const socket = sockets.get(0)
@@ -697,10 +728,6 @@ describe('Client', () => {
       bar: 123,
     })
 
-    expect(onSilentError).toHaveBeenCalledOnce()
-    const err = onSilentError.mock.lastCall![0] 
-    expect(err).toBeInstanceOf(Error)
-    expect(err.message).toMatch('unknown message: {"bar":123}')
   })
 
   test('subscribe error', async () => {
@@ -727,6 +754,29 @@ describe('Client', () => {
     })
 
     await expect(sub.promise).rejects.toThrow('Subscribe error: UnauthorizedException, BadRequestException (Invalid Channel Format)')
+  })
+
+  test('subscribe_success unknown id', async () => {
+    await using _ = expectUncaughtException('[aws-appsync-events bug] subscribe_success for unknown sub')
+    const { client, sockets } = newClient()
+
+    client['connect']()
+    const socket = sockets.get(0)
+    socket.openAndHandshake()
+    socket.subscribeSuccess('foo')
+  })
+
+  test('subscribe_error unknown id', async () => {
+    await using _ = expectUncaughtException('[aws-appsync-events bug] subscribe_error for unknown sub')
+    const { client, sockets } = newClient()
+
+    client['connect']()
+    const socket = sockets.get(0)
+    socket.openAndHandshake()
+    socket.send({
+      id: 'foo',
+      type: 'subscribe_error',
+    })
   })
 
   test('unsubscribe - connecting', async () => {
@@ -895,7 +945,7 @@ describe('Client', () => {
 
     const socket = sockets.get(0)
     socket.openAndHandshake()
-    const subId = socket.acceptSubscribe('default/foo')
+    socket.acceptSubscribe('default/foo')
 
     sub.unsubscribe()
     vi.runAllTimers()
@@ -906,30 +956,73 @@ describe('Client', () => {
     expect(err).not.toBeCalled()
   })
 
-  test('unsubscribe - backoff', async () => {
+  test('sub, backoff, unsub', async () => {
     const { client, sockets } = newClient()
 
-    const next = vi.fn()
-    const then = vi.fn()
-    const err = vi.fn()
-    const sub = client.subscribe('default/foo', { next })
-
-    void sub.promise.then(then, err)
+    const sub = client.subscribe('default/foo', {})
 
     const socket1 = sockets.get(0)
+    socket1.openAndHandshake()
+    const subId = socket1.acceptSubscribe('default/foo')
+
+    await expect(sub.promise).resolves.not.toThrow()
+
     socket1.close()
     expect(client['state'].type).toBe('backoff')
     sub.unsubscribe()
 
-    await sleep(0)
-    expect(then).toBeCalled()
-    expect(err).not.toBeCalled()
-
     vi.runAllTimers()
+
     expect(client['state'].type).toBe('connecting')
     const socket2 = sockets.get(1)
     socket2.openAndHandshake()
     expect(socket2.consumeMessage()).toBeUndefined()
+  })
+
+  test('2 sub, backoff, 1 unsub', async () => {
+    const { client, sockets } = newClient()
+
+    const next1 = vi.fn()
+    const sub1 = client.subscribe('default/foo', { next: next1 })
+    const next2 = vi.fn()
+    const sub2 = client.subscribe('default/foo', { next: next2 })
+
+    const socket1 = sockets.get(0)
+    socket1.openAndHandshake()
+    socket1.acceptSubscribe('default/foo')
+
+    await expect(sub1.promise).resolves.not.toThrow()
+    await expect(sub2.promise).resolves.not.toThrow()
+
+    socket1.close()
+    expect(client['state'].type).toBe('backoff')
+    sub2.unsubscribe()
+
+    vi.runAllTimers()
+
+    expect(client['state'].type).toBe('connecting')
+    const socket2 = sockets.get(1)
+    socket2.openAndHandshake()
+    const subId2 = socket2.acceptSubscribe('default/foo')
+    socket2.sendData(subId2, { foo: 123 })
+
+    expect(next1).toHaveBeenCalledExactlyOnceWith({ foo: 123 })
+    expect(next2).not.toBeCalled()
+  })
+
+  test('backoff eager unsub', async () => {
+    const { client, sockets } = newClient()
+
+    client['connect']()
+    const socket = sockets.get(0)
+    socket.close()
+    expect(client['state'].type).toBe('backoff')
+
+    const sub = client.subscribe('default/foo', {})
+    expect(client['state'].type).toBe('backoff')
+
+    sub.unsubscribe()
+    await expect(sub.promise).resolves.not.toThrow()
   })
 
   test('data after unsubscribe', async () => {
@@ -976,8 +1069,8 @@ describe('Client', () => {
   })
 
   test('unsubscribe error', async () => {
-    const onSilentError = vi.fn()
-    const { client, sockets } = newClient({ onSilentError })
+    await using _ = expectUncaughtException('[aws-appsync-events bug] unsubscribe error: UnknownOperationError (Unknown operation id)')
+    const { client, sockets } = newClient()
 
     const next = vi.fn()
     const sub = client.subscribe('default/foo', {})
@@ -1002,11 +1095,6 @@ describe('Client', () => {
         }
       ]
     })
-
-    expect(onSilentError).toHaveBeenCalledOnce()
-    const err = onSilentError.mock.lastCall![0] 
-    expect(err).toBeInstanceOf(Error)
-    expect(err.message).toMatch('Unsubscribe error: UnknownOperationError (Unknown operation id)')
   })
 
   test.each([false, true])('disconnect - connecting, err - %s', async (errBeforeClose) => {
@@ -1094,5 +1182,58 @@ describe('Client', () => {
 
     vi.runAllTimers()
     expect(client['state'].type).toBe('failed')
+  })
+
+  test('subs renewed on retry', async () => {
+    const { client, sockets } = newClient()
+
+    const sub = client.subscribe('default/foo', {})
+    const socket1 = sockets.get(0)
+    socket1.openAndHandshake()
+    const subId1 = socket1.acceptSubscribe('default/foo')
+
+    await expect(sub.promise).resolves.not.toThrow()
+    
+    socket1.close()
+    expect(client['state'].type).toBe('backoff')
+
+    vi.runAllTimers()
+    const socket2 = sockets.get(1)
+    socket2.openAndHandshake()
+    const subId2 = socket2.consumeSubscribeRequest('default/foo')
+
+    expect(subId2).toBe(subId1)
+  })
+
+  test('onStateChanged - connected', async () => {
+    const onStateChanged = vi.fn()
+    const { client, sockets } = newClient({ onStateChanged })
+
+    client['connect']()
+    const socket = sockets.get(0)
+    socket.open()
+    expect(onStateChanged).not.toBeCalled()
+    socket.handshake()
+    expect(onStateChanged).toHaveBeenCalledExactlyOnceWith('connected')
+  })
+
+  test('onStateChanged - backoff', async () => {
+    const onStateChanged = vi.fn()
+    const { client, sockets } = newClient({ onStateChanged })
+
+    client['connect']()
+    const socket = sockets.get(0)
+    socket.close()
+    expect(onStateChanged).toHaveBeenCalledExactlyOnceWith('backoff')
+  })
+
+  test('onStateChanged - failed', async () => {
+    const onStateChanged = vi.fn()
+    const { client, sockets } = newClient({ onStateChanged, retryBehavior: () => -1 })
+
+    client['connect']()
+    const socket = sockets.get(0)
+    socket.close()
+    expect(onStateChanged).toHaveBeenCalledExactlyOnceWith('failed')
   })
 })
