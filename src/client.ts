@@ -68,10 +68,9 @@ export type ClientOpts = {
    * 
    * @param attempt The current retry attempt number (starting from 1).
    * @returns The delay in milliseconds before the next retry attempt,
-   * or -1 to stop retrying and treat the connection as failed.
+   * or `false` to stop retrying and treat the connection as failed.
    */
-   // TODO: return false
-  retryBehavior?: ((attempt: number) => number) | undefined
+  retryBehavior?: ((attempt: number) => number | false) | undefined
 
   onStateChanged?: ((newState: ClientState) => void) | undefined
 
@@ -115,9 +114,9 @@ export type SubscribeOpts = {
 }
 
 // https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
-export function exponentialBackoffRetryBehavior(maxAttempts: number): (attempt: number) => number {
+export function exponentialBackoffRetryBehavior(maxAttempts: number): (attempt: number) => number | false {
   return attempt => attempt > maxAttempts
-    ? -1
+    ? false
     : Math.min(Math.random() * (2 ** attempt), 20) * 1_000
 }
 
@@ -204,7 +203,7 @@ export class Client {
   }
   private readonly pendingUnsubsBySubIds = new Map<string, Set<SubListener>>()
 
-  private readonly retryBehavior: (attempt: number) => number
+  private readonly retryBehavior: (attempt: number) => number | false
   private readonly onStateChanged: ((newState: ClientState) => void) | null
   private readonly idleConnectionKeepAliveTimeMs: number | false
 
@@ -218,6 +217,7 @@ export class Client {
   } | {
     type: 'handshaking'
     ws: WebSocketAdapter
+    timerId: ReturnType<typeof setTimeout>
     idleTimerId: ReturnType<typeof setTimeout> | undefined
     closeWs: () => void
   } | {
@@ -426,6 +426,10 @@ export class Client {
         type: 'handshaking',
         ws,
         closeWs,
+        timerId: setTimeout(() => {
+          ws.close()
+          connectionEnded(false)
+        }, 15_000),
         idleTimerId: state.idleTimerId
       }
       ws.send(JSON.stringify({ type: 'connection_init' }))
@@ -448,7 +452,7 @@ export class Client {
         // 'backoff', 'failed' - should never happen: the 'message' listener is
         // removed before leaving the 'connected' state
         case 'handshaking':
-          // TODO: ack timeout
+          clearTimeout(this.state.timerId)
           if (message.type !== 'connection_ack') {
             throw new Error(`[aws-appsync-events bug] handshake error: expected "connection_ack" but got ${JSON.stringify(message.type)}`)
           }
@@ -548,6 +552,9 @@ export class Client {
         case 'connecting':
         case 'handshaking': {
           clearTimeout(this.state.idleTimerId)
+          if (this.state.type === 'handshaking') {
+            clearTimeout(this.state.timerId)
+          }
           for (const [subId, listeners] of this.pendingUnsubsBySubIds) {
             const channel = this.channelNamesById.get(subId)!
             const sub = this.subsByChannelName.get(channel)!
@@ -574,7 +581,7 @@ export class Client {
           }
           const newAttempt = attempt + 1
           const msToSleep = this.retryBehavior(newAttempt)
-          if (msToSleep < 0) {
+          if (msToSleep === false) {
             this.state = { type: 'failed' }
             this.onStateChanged?.('failed')
             break

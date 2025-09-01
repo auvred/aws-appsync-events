@@ -4,7 +4,7 @@ import { Client, parseEndpoint, ResettableTimer, type ClientOpts, type WebSocket
 import * as util from 'node:util'
 
 function simpleRetryBehavior(maxAttempts: number, delay = 10) {
-  return (attempt: number) => attempt > maxAttempts ? -1 : delay
+  return (attempt: number) => attempt > maxAttempts ? false : delay
 }
 
 function expectMockCalledWithError(mock: ReturnType<typeof vi.fn>, msg: string) {
@@ -584,7 +584,7 @@ describe('Client', { timeout: 100 }, () => {
   })
 
   it('should reconnect when subscribing after a failure', () => {
-    const { client, sockets } = newClient({ retryBehavior: () => -1 })
+    const { client, sockets } = newClient({ retryBehavior: () => false })
 
     client.connect()
     const socket1 = sockets.get(0)
@@ -904,7 +904,7 @@ describe('Client', { timeout: 100 }, () => {
   })
 
   it('should not emit error when unsubscribing from an established subscription even if the connection later fails', () => {
-    const { client, sockets } = newClient({ retryBehavior: () => -1, idleConnectionKeepAliveTimeMs: 20 })
+    const { client, sockets } = newClient({ retryBehavior: () => false, idleConnectionKeepAliveTimeMs: 20 })
 
     const { sub, established, error } = subscribeWithMocks(client, 'default/foo')
 
@@ -1291,7 +1291,7 @@ describe('Client', { timeout: 100 }, () => {
 
   it('should invoke onStateChanged with failed when retries are disabled and socket closes', () => {
     const onStateChanged = vi.fn()
-    const { client, sockets } = newClient({ onStateChanged, retryBehavior: () => -1 })
+    const { client, sockets } = newClient({ onStateChanged, retryBehavior: () => false })
 
     client.connect()
     const socket = sockets.get(0)
@@ -1414,7 +1414,7 @@ describe('Client', { timeout: 100 }, () => {
   })
 
   it('should reset idle timer when a new subscription is added before timeout', () => {
-    const { client, sockets } = newClient({ retryBehavior: () => -1, idleConnectionKeepAliveTimeMs: 20 })
+    const { client, sockets } = newClient({ retryBehavior: () => false, idleConnectionKeepAliveTimeMs: 20 })
 
     const { sub: sub1 } = subscribeWithMocks(client, 'default/foo')
     const socket = sockets.get(0)
@@ -1502,7 +1502,7 @@ describe('Client', { timeout: 100 }, () => {
 
   it.for(['backoff', 'failed'])('should not reopen connection from %s when there are no subs and keepalive is disabled', (fromState) => {
     const onStateChanged = vi.fn()
-    const { client, sockets } = newClient({ onStateChanged, retryBehavior: fromState === 'failed' ? () => -1 : () => 5, idleConnectionKeepAliveTimeMs: false })
+    const { client, sockets } = newClient({ onStateChanged, retryBehavior: fromState === 'failed' ? () => false : () => 5, idleConnectionKeepAliveTimeMs: false })
 
     const { sub } = subscribeWithMocks(client, 'default/foo')
     const socket = sockets.get(0)
@@ -1650,7 +1650,7 @@ describe('Client', { timeout: 100 }, () => {
 
   it('should ignore manual close during failed state and remain failed', () => {
     const onStateChanged = vi.fn()
-    const { client, sockets } = newClient({ onStateChanged, retryBehavior: () => -1 })
+    const { client, sockets } = newClient({ onStateChanged, retryBehavior: () => false })
 
     client.connect()
     const socket = sockets.get(0)
@@ -1771,5 +1771,22 @@ describe('Client', { timeout: 100 }, () => {
 
     socket2.subscribeSuccess(subId)
     socket2.consumeUnsubscribeRequest(subId)
+  })
+
+  it('should timeout handshake', () => {
+    const onStateChanged = vi.fn()
+    const { client, sockets } = newClient({ onStateChanged })
+
+    client.connect()
+    const socket = sockets.get(0)
+    socket.open()
+    socket.consumeConnectionInit()
+    expect(client['state'].type).toBe('handshaking')
+
+    vi.advanceTimersByTime(14_999)
+    expect(onStateChanged).not.toBeCalled()
+
+    vi.advanceTimersByTime(1)
+    expect(onStateChanged).toHaveBeenCalledExactlyOnceWith('backoff')
   })
 })
