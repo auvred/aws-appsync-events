@@ -1473,6 +1473,24 @@ describe('Client', { timeout: 100 }, () => {
     socket.consumeSubscribeRequest('default/bar')
   })
 
+  it('should reset previous idle timer when entring connected with 0 subs', () => {
+    const { client, sockets } = newClient({ idleConnectionKeepAliveTimeMs: 20 })
+
+    const { sub: sub1 } = subscribeWithMocks(client, 'default/foo')
+    const socket = sockets.get(0)
+    socket.open()
+    expect(client['state'].type).toBe('handshaking')
+    sub1.unsubscribe()
+
+    vi.advanceTimersByTime(15)
+
+    socket.handshake()
+
+    vi.advanceTimersByTime(15)
+
+    expect(client['state'].type).toBe('connected')
+  })
+
   it('should not open a connection when there are no subs and keepalive is disabled', () => {
     const onStateChanged = vi.fn()
     const { client } = newClient({ onStateChanged, idleConnectionKeepAliveTimeMs: false })
@@ -1697,5 +1715,61 @@ describe('Client', { timeout: 100 }, () => {
   
     expect(() => socket.close()).not.toThrow()
     expect(client['state'].type).toBe('backoff')
+  })
+
+  it('should call established once when sub initiated in established cb', () => {
+    const { client, sockets } = newClient()
+
+    const { established: est1 } = subscribeWithMocks(client, 'default/foo')
+    const socket = sockets.get(0)
+    socket.openAndHandshake()
+
+    let est2!: typeof est1
+    est1.mockImplementation(() => ({ established: est2 } = subscribeWithMocks(client, 'default/foo')))
+
+    socket.acceptSubscribe('default/foo')
+
+    expect(est2).toHaveBeenCalledOnce()
+  })
+
+  it('should call error for subs initiated in error cb', () => {
+    const { client, sockets } = newClient()
+
+    const { error: err1 } = subscribeWithMocks(client, 'default/foo')
+    const socket = sockets.get(0)
+    socket.openAndHandshake()
+
+    let err2!: typeof err1
+    err1.mockImplementation(() => ({ error: err2 } = subscribeWithMocks(client, 'default/foo')))
+
+    const subId = socket.consumeSubscribeRequest('default/foo')
+    socket.send({
+      type: 'subscribe_error',
+      id: subId,
+      errors: [ { errorType: 'UnauthorizedException' }],
+    })
+
+    expect(err2).toHaveBeenCalledOnce()
+  })
+
+  it('should reset isEstablished on connection loss', () => {
+    const { client, sockets } = newClient()
+
+    const { sub } = subscribeWithMocks(client, 'default/foo')
+    const socket1 = sockets.get(0)
+    socket1.openAndHandshake()
+    socket1.acceptSubscribe('default/foo')
+
+    socket1.close()
+    vi.runAllTimers()
+
+    const socket2 = sockets.get(1)
+    socket2.openAndHandshake()
+    const subId = socket2.consumeSubscribeRequest('default/foo')
+
+    sub.unsubscribe()
+
+    socket2.subscribeSuccess(subId)
+    socket2.consumeUnsubscribeRequest(subId)
   })
 })

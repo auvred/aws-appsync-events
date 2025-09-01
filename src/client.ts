@@ -91,6 +91,10 @@ export type ClientOpts = {
   idleConnectionKeepAliveTimeMs?: number | false | undefined
 }
 
+// TODO: maybe schedule all callbacks to run on the next tick, 
+// so they don't cause side effects that could interfere with 
+// the current flow
+
 export type SubscribeOpts = {
   /**
    * Called when a new event is received from the subscription.
@@ -141,6 +145,11 @@ export class ResettableTimer {
     }
   }
 }
+
+// 2022+ https://caniuse.com/mdn-api_crypto_randomuuid
+const randomId = crypto.randomUUID?.bind(crypto) ?? (() => "10000000-1000-4000-8000-100000000000".replace(/[018]/g, c =>
+  (+c ^ crypto.getRandomValues(new Uint8Array(1))[0]! & 15 >> +c / 4).toString(16)
+))
 
 export type WebSocketAdapter = {
   addEventListener: <K extends keyof WebSocketEventMap>(type: K, listener: (ev: WebSocketEventMap[K]) => any) => void
@@ -249,9 +258,7 @@ export class Client {
     if (sub == null) {
       firstSub = true
       this.subsByChannelName.set(channel, sub = {
-        // TODO: polyfill for older enrironments
-        // https://caniuse.com/mdn-api_crypto_randomuuid
-        id: crypto.randomUUID(),
+        id: randomId(),
         isEstablished: false,
         isErrored: false,
         listeners: new Set(),
@@ -269,14 +276,11 @@ export class Client {
       event,
       error: err => {
         const pendingUnsubs = this.pendingUnsubsBySubIds.get(sub.id)
-        if (pendingUnsubs != null) {
-          pendingUnsubs.delete(listener)
-          if (pendingUnsubs.size === 0) {
-            this.pendingUnsubsBySubIds.delete(sub.id)
-          }
+        if (pendingUnsubs?.delete(listener) && pendingUnsubs.size === 0) {
+          this.pendingUnsubsBySubIds.delete(sub.id)
         }
-        tryCleanupListeners()
         error?.(err)
+        tryCleanupListeners()
       },
       established,
     }
@@ -463,10 +467,10 @@ export class Client {
             // connect early returns
             // - if connect was called implicitly (via subscribe), idleConnectionKeepAliveTimeMs === false
             // situation is already handled (because the current state is 'handshaking')
-            // TODO: remove this condition after double check
             if (this.idleConnectionKeepAliveTimeMs === false) {
-              throw new Error('impossible situation')
+              throw new Error('[aws-appsync-events bug] expected idle connection keep alive to be enabled')
             }
+            clearTimeout(this.state.idleTimerId)
             this.state.idleTimerId = setTimeout(closeWs, this.idleConnectionKeepAliveTimeMs as number)
           }
           for (const [channel, sub] of this.subsByChannelName) {
@@ -490,7 +494,8 @@ export class Client {
                 throw new Error(`[aws-appsync-events bug] subscribe_success for unknown sub`)
               }
               sub.isEstablished = true
-              for (const listener of sub.listeners) {
+              // copy listeners (established() can add new listeners)
+              for (const listener of Array.from(sub.listeners)) {
                 listener.established?.()
               }
               break
@@ -502,6 +507,8 @@ export class Client {
               }
               const error = new Error('Subscribe error' + normalizeErrors(message.errors))
               sub.isErrored = true
+              // error() can add new listeners; they're always appended at the end,
+              // and are iterated here as well
               for (const listener of sub.listeners) {
                 listener.error(error)
               }
@@ -552,6 +559,10 @@ export class Client {
               this.channelNamesById.delete(subId)
             }
             listeners.clear()
+          }
+          for (const sub of this.subsByChannelName.values()) {
+            sub.isEstablished = false
+            sub.isErrored = false
           }
           this.pendingUnsubsBySubIds.clear()
           if (graceful) {
