@@ -3,7 +3,8 @@
   "type": "module",
   "scripts": {
     "build": "tsdown",
-    "test": "vitest",
+    "test": "vitest --exclude tests/e2e.test.ts",
+    "test:e2e": "vitest e2e.test.ts",
     "type-check": "tsc --noEmit --project ./tsconfig.json && tsc --noEmit --project ./tsconfig.build.json"
   },
   "devDependencies": {

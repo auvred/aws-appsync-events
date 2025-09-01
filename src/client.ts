@@ -1,3 +1,5 @@
+import { sigV4 } from "./sigv4.js";
+
 const provisionedEndpointRe = /^(\w{26}\.(appsync|appsync-realtime)-api\.\w{2}(?:(?:-\w{2,})+)-\d\.amazonaws.com(?:\.cn)?)(?:\/event(?:\/realtime)?)?$/i
 const protocolRe = /^(?:(?:(?:https?)|(?:wss?)):\/\/)?/i
 const pathnameRe = /(?:\/(?:event(?:\/(?:realtime\/?)?)?)?)?$/i
@@ -37,12 +39,68 @@ function normalizeErrors(errors: unknown) {
                 : '')
 }
 
-type ApiKeyAuthorization = {
-  type: 'API_KEY'
-  key: string
+export type AuthorizerOpts = {
+  httpEndpoint: string
+  realtimeEndpoint: string
+  message: {
+    type: 'connect'
+  } | {
+    type: 'subscribe'
+    channel: string
+  } | {
+    type: 'publish'
+    channel: string
+    events: unknown[]
+  }
 }
 
-type Authorization = ApiKeyAuthorization
+export type Authorizer = (opts: AuthorizerOpts) => Promise<Record<string, string>> | Record<string, string>
+
+export function apiKeyAuthorizer(apiKey: string): Authorizer {
+  return opts => ({
+    host: opts.httpEndpoint,
+    'x-api-key': apiKey,
+  })
+}
+
+export function awsIamAuthorizer(config: {
+  accessKeyId: string
+  secretAccessKey: string
+  region: string
+}): Authorizer {
+  return async opts => {
+    const headers = {
+      "accept": "application/json, text/javascript",
+      "content-encoding": "amz-1.0",
+      "content-type": "application/json; charset=UTF-8",
+      "host": opts.httpEndpoint,
+    }
+    const { xAmzDate, authorization } = await sigV4({
+      region: config.region,
+      service: 'appsync',
+      method: 'POST',
+      accessKeyId: config.accessKeyId,
+      secretAccessKey: config.secretAccessKey,
+      headers,
+      url: `https://${opts.httpEndpoint}/event`,
+      body: JSON.stringify((() => {
+        switch (opts.message.type) {
+          case 'connect':
+            return {}
+          case 'subscribe':
+            return { channel: opts.message.channel }
+          case 'publish':
+            return { channel: opts.message.channel, events: opts.message.events }
+        }
+      })())
+    })
+    return {
+      ...headers,
+      "x-amz-date": xAmzDate,
+      "Authorization": authorization
+    }
+  }
+}
 
 type SubListener = {
   event: (event: unknown) => void
@@ -210,6 +268,8 @@ export class Client {
   private state: {
     type: 'idle'
   } | {
+    type: 'auth-preparing'
+  } | {
     type: 'connecting'
     ws: WebSocketAdapter
     idleTimerId: ReturnType<typeof setTimeout> | undefined
@@ -236,7 +296,7 @@ export class Client {
     type: 'idle',
   }
 
-  constructor(endpoint: string, readonly authorization: Authorization, {
+  constructor(endpoint: string, readonly authorizer: Authorizer, {
     retryBehavior = exponentialBackoffRetryBehavior(3),
     onStateChanged,
     idleConnectionKeepAliveTimeMs = 5_000,
@@ -288,9 +348,9 @@ export class Client {
     this.channelNamesById.set(sub.id, channel)
 
     switch (this.state.type) {
-      // We can ignore 'connecting', 'handshaking' and 'backoff', because when
-      // they are active, there is no established WebSocket connection, so 
-      // the 'subscribe' message cannot be sent. When the state enter 'connected',
+      // We can ignore 'auth-preparing', 'connecting', 'handshaking' and 'backoff',
+      // because when they are active, there is no established WebSocket connection,
+      // so the 'subscribe' message cannot be sent. When the state enter 'connected',
       // all pending subscriptions will be initiated/renewed.
       case 'idle':
       case 'failed':
@@ -298,12 +358,7 @@ export class Client {
         break
       case 'connected':
         if (firstSub) {
-          this.state.ws.send(JSON.stringify({
-            type: 'subscribe',
-            id: sub.id,
-            channel,
-            authorization: this.authorizationHeaders,
-          }))
+          this.wsSubscribe(this.state.ws, sub.id, channel)
         } else if (sub.isEstablished) {
           established?.()
         }
@@ -325,6 +380,7 @@ export class Client {
         // an unsubscribe request. All subscriptions are cancelled once
         // the WebSocket is closed.
         case 'backoff':
+        case 'auth-preparing':
         case 'connecting':
         case 'handshaking':
         case 'failed':
@@ -370,7 +426,7 @@ export class Client {
     }
   }
 
-  connect = () => {
+  connect: () => void = async () => {
     const dontInitConnection = this.idleConnectionKeepAliveTimeMs === false && this.subsByChannelName.size === 0
     let attempt = 0
     switch (this.state.type) {
@@ -388,16 +444,20 @@ export class Client {
           return
         }
         break
+      case 'auth-preparing':
       case 'connecting':
       case 'handshaking':
       case 'connected':
         return
     }
 
-    const authPayload = btoa(JSON.stringify(this.authorizationHeaders))
+    this.state = { type: 'auth-preparing' }
+
+    const authPayload = btoa(JSON.stringify(await this.authorizationHeaders({ type: 'connect' })))
       .replace(/\+/g, '-')
       .replace(/\//g, '_')
       .replace(/=+$/g, '')
+
     // TODO: think about memory leaks
     // See https://websockets.spec.whatwg.org/#garbage-collection
     const ws = new this.wsCtor(`wss://${this.realtimeEndpoint}/event/realtime`, [
@@ -443,8 +503,8 @@ export class Client {
       const message = JSON.parse(event.data)
 
       switch (this.state.type) {
-        // 'idle' - should never happen: the ws is created only after
-        // entering the 'connecting' state
+        // 'idle', 'auth-preparing' - should never happen: the ws is created
+        // only after entering the 'connecting' state
         //
         // 'connecting' - should never happen: message cannot be delivered
         // before the 'open' state
@@ -452,6 +512,24 @@ export class Client {
         // 'backoff', 'failed' - should never happen: the 'message' listener is
         // removed before leaving the 'connected' state
         case 'handshaking':
+          // TODO:
+          /*
+{
+  errors: [
+    {
+      errorType: 'UnauthorizedException',
+      message: 'You are not authorized to make this call.',
+      errorCode: 401
+    }
+  ],
+  type: 'connection_error'
+}
+
+{
+  errors: [ { errorType: 'UnauthorizedException', errorCode: 401 } ],
+  type: 'connection_error'
+}
+          */
           clearTimeout(this.state.timerId)
           if (message.type !== 'connection_ack') {
             throw new Error(`[aws-appsync-events bug] handshake error: expected "connection_ack" but got ${JSON.stringify(message.type)}`)
@@ -478,12 +556,7 @@ export class Client {
             this.state.idleTimerId = setTimeout(closeWs, this.idleConnectionKeepAliveTimeMs as number)
           }
           for (const [channel, sub] of this.subsByChannelName) {
-            ws.send(JSON.stringify({
-              type: 'subscribe',
-              id: sub.id,
-              channel,
-              authorization: this.authorizationHeaders,
-            }))
+            this.wsSubscribe(this.state.ws, sub.id, channel)
           }
           this.onStateChanged?.('connected')
           break
@@ -545,8 +618,8 @@ export class Client {
       removeEventListeners()
 
       switch (this.state.type) {
-        // 'idle', 'backoff', 'failed' - there is no chance for connectionEnded to be
-        // called while the client is in any of these states
+        // 'idle', 'auth-preparing', 'backoff', 'failed' - there is no chance for
+        // connectionEnded to be called while the client is in any of these states
         case 'connected':
           this.state.timeoutTimer.cancel()
         case 'connecting':
@@ -618,7 +691,7 @@ export class Client {
 
   close = () => {
     switch (this.state.type) {
-      // 'failed' - leave it as is
+      // 'idle', 'auth-preparing', 'failed' - leave it as is
       case 'connecting':
       case 'handshaking':
       case 'connected':
@@ -632,15 +705,16 @@ export class Client {
   }
 
   publish = async (channel: string, events: unknown[]) => {
+    events = events.map(e => JSON.stringify(e))
     const response = await fetch(`https://${this.httpEndpoint}/event`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        ...this.authorizationHeaders,
+        ...await this.authorizationHeaders({ type: 'publish', channel, events }),
       },
       body: JSON.stringify({
         channel,
-        events: events.map(e => JSON.stringify(e)),
+        events,
       })
     })
     const responseBodyText = await response.text()
@@ -661,13 +735,21 @@ export class Client {
     }
   }
 
-  private get authorizationHeaders() {
-    switch (this.authorization.type) {
-      case 'API_KEY':
-        return {
-          host: this.httpEndpoint,
-          'x-api-key': this.authorization.key,
-        }
-    }
+  private authorizationHeaders = async (message: AuthorizerOpts['message']) => {
+    return await this.authorizer({
+      httpEndpoint: this.httpEndpoint,
+      realtimeEndpoint: this.realtimeEndpoint,
+      message
+    })
   }
+
+  private wsSubscribe = async (ws: WebSocketAdapter, subId: string, channel: string) => ws.send(JSON.stringify({
+    type: 'subscribe',
+    id: subId,
+    channel,
+    authorization: await this.authorizationHeaders({
+      type: 'subscribe',
+      channel,
+    }),
+  }))
 }

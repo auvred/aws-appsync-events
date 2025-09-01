@@ -1,6 +1,6 @@
 import { expect, describe, test, vi, afterEach, beforeEach, onTestFinished, it } from 'vitest'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { Client, parseEndpoint, ResettableTimer, type ClientOpts, type WebSocketAdapter, type WebSocketAdapterConstructor } from '../src/client.js'
+import { apiKeyAuthorizer, Client, parseEndpoint, ResettableTimer, type ClientOpts, type WebSocketAdapter, type WebSocketAdapterConstructor } from '../src/client.js'
 import * as util from 'node:util'
 
 function simpleRetryBehavior(maxAttempts: number, delay = 10) {
@@ -283,7 +283,7 @@ describe('Client', { timeout: 100 }, () => {
     readonly incomingMessages: string[]
   }
 
-  function subscribeWithMocks(client: Client, channel: string) {
+  async function subscribeWithMocks(client: Client, channel: string) {
     const event = vi.fn()
     const established = vi.fn()
     const error = vi.fn()
@@ -381,7 +381,7 @@ describe('Client', { timeout: 100 }, () => {
   }
 
   function newClient(opts?: ClientOpts) {
-    const client = new Client('example.com', { type: 'API_KEY', key: 'foo' }, {
+    const client = new Client('example.com', apiKeyAuthorizer('foo'), {
       retryBehavior: simpleRetryBehavior(3),
       ...opts,
     })
