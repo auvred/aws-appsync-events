@@ -161,10 +161,8 @@ export class Client {
         case 'connecting':
         case 'handshaking':
         case 'connected':
-          if (client.state.idleTimer != null) {
-            client.state.idleTimer.cancel()
-            client.state.idleTimer = null
-          }
+          clearTimeout(client.state.idleTimerId)
+          client.state.idleTimerId = undefined
       }
       return super.set(key, value)
     }
@@ -178,7 +176,7 @@ export class Client {
             if (client.idleConnectionKeepAliveTimeMs === false) {
               client.state.closeWs()
             } else {
-              client.state.idleTimer = new ResettableTimer(client.idleConnectionKeepAliveTimeMs, client.state.closeWs)
+              client.state.idleTimerId = setTimeout(client.state.closeWs, client.idleConnectionKeepAliveTimeMs)
             }
         }
       }
@@ -204,22 +202,23 @@ export class Client {
   } | {
     type: 'connecting'
     ws: WebSocketAdapter
-    idleTimer: ResettableTimer | null
+    idleTimerId: ReturnType<typeof setTimeout> | undefined
     closeWs: () => void
   } | {
     type: 'handshaking'
     ws: WebSocketAdapter
-    idleTimer: ResettableTimer | null
+    idleTimerId: ReturnType<typeof setTimeout> | undefined
     closeWs: () => void
   } | {
     type: 'connected'
     ws: WebSocketAdapter
     timeoutTimer: ResettableTimer
-    idleTimer: ResettableTimer | null
+    idleTimerId: ReturnType<typeof setTimeout> | undefined
     closeWs: () => void
   } | {
     type: 'backoff'
     attempt: number
+    timerId: ReturnType<typeof setTimeout>
   } | {
     type: 'failed'
   } = {
@@ -257,11 +256,10 @@ export class Client {
     }
 
     const tryCleanupListeners = () => {
-      if (sub.listeners.size === 1) {
+      sub.listeners.delete(listener)
+      if (sub.listeners.size === 0) {
         this.subsByChannelName.delete(channel)
         this.channelNamesById.delete(sub.id)
-      } else {
-        sub.listeners.delete(listener)
       }
     }
 
@@ -297,7 +295,9 @@ export class Client {
           if (this.pendingUnsubIds.delete(sub.id)) {
             listener.established = established
           }
-          established?.()
+          if (sub.isEstablished) {
+            established?.()
+          }
         }
         break
     }
@@ -319,6 +319,7 @@ export class Client {
         case 'backoff':
         case 'connecting':
         case 'handshaking':
+        case 'failed':
           tryCleanupListeners()
           break
         case 'connected': {
@@ -347,8 +348,6 @@ export class Client {
           this.pendingUnsubIds.add(sub.id)
           break
         }
-        case 'failed': // TODO
-          break
       }
     }
 
@@ -358,20 +357,27 @@ export class Client {
   }
 
   connect = () => {
-    if (this.idleConnectionKeepAliveTimeMs === false && this.subsByChannelName.size === 0) {
-      return
-    }
+    const dontInitConnection = this.idleConnectionKeepAliveTimeMs === false && this.subsByChannelName.size === 0
     let attempt = 0
     switch (this.state.type) {
-      // 'idle' - connect
-      // 'failed' - reconnect
+      case 'backoff':
+        attempt = this.state.attempt
+        clearTimeout(this.state.timerId)
+      case 'failed':
+        if (dontInitConnection) {
+          this.state = { type: 'idle' }
+          this.onStateChanged?.('idle')
+          return
+        }
+      case 'idle':
+        if (dontInitConnection) {
+          return
+        }
+        break
       case 'connecting':
       case 'handshaking':
       case 'connected':
         return
-      case 'backoff':
-        attempt = this.state.attempt
-        break
     }
 
     const authPayload = btoa(JSON.stringify(this.authorizationHeaders))
@@ -394,16 +400,19 @@ export class Client {
       type: 'connecting',
       ws,
       closeWs,
+      idleTimerId: undefined,
     }
 
     const onOpen = () => {
       ws.removeEventListener('open', onOpen)
       // 'open' cannot be called after 'error' or 'close'; current state MUST
       // be 'connecting'
+      const state = this.state as (typeof this.state & { type: 'connecting' })
       this.state = {
         type: 'handshaking',
         ws,
         closeWs,
+        idleTimerId: state.idleTimerId
       }
       ws.send(JSON.stringify({ type: 'connection_init' }))
     }
@@ -436,7 +445,7 @@ export class Client {
               ws.close()
               connectionEnded(false)
             }),
-            idleTimer: null,
+            idleTimerId: this.state.idleTimerId,
             closeWs,
           }
           if (this.subsByChannelName.size === 0) {
@@ -448,7 +457,7 @@ export class Client {
             if (this.idleConnectionKeepAliveTimeMs === false) {
               throw new Error('impossible situation')
             }
-            this.state.idleTimer = new ResettableTimer(this.idleConnectionKeepAliveTimeMs as number, closeWs)
+            this.state.idleTimerId = setTimeout(closeWs, this.idleConnectionKeepAliveTimeMs as number)
           }
           for (const [channel, sub] of this.subsByChannelName) {
             ws.send(JSON.stringify({
@@ -511,24 +520,27 @@ export class Client {
     }
 
     const connectionEnded = (graceful: boolean) => {
-      // TODO: handle manual close
       removeEventListeners()
 
       switch (this.state.type) {
+        // 'idle', 'backoff', 'failed' - there is no chance for connectionEnded to be
+        // called while the client is in any of these states
         case 'connected':
           this.state.timeoutTimer.cancel()
         case 'connecting':
-        case 'handshaking': 
-          this.state.idleTimer?.cancel()
-        case 'idle': {
+        case 'handshaking': {
+          clearTimeout(this.state.idleTimerId)
           for (const subId of this.pendingUnsubIds) {
             const channel = this.channelNamesById.get(subId)!
             this.subsByChannelName.delete(channel)
             this.channelNamesById.delete(subId)
+            this.pendingUnsubIds.delete(subId)
           }
           if (graceful) {
+            if (this.state.type === 'connected') {
+              this.onStateChanged?.('idle')
+            }
             this.state = { type: 'idle' }
-            this.onStateChanged?.('idle')
             break
           }
           const newAttempt = attempt + 1
@@ -541,13 +553,11 @@ export class Client {
           this.state = {
             type: 'backoff',
             attempt: newAttempt,
+            timerId: setTimeout(this.connect, msToSleep),
           }
           this.onStateChanged?.('backoff')
-          setTimeout(this.connect, msToSleep)
           break
         }
-        case 'backoff':
-          // should never happen
       }
     }
 
@@ -567,6 +577,21 @@ export class Client {
       ws.removeEventListener('message', onMessage)
       ws.removeEventListener('error', onClose)
       ws.removeEventListener('close', onClose)
+    }
+  }
+
+  close = () => {
+    switch (this.state.type) {
+      // 'failed' - leave it as is
+      case 'connecting':
+      case 'handshaking':
+      case 'connected':
+        this.state.closeWs()
+        break
+      case 'backoff':
+        clearTimeout(this.state.timerId)
+        this.state = { type: 'idle' }
+        this.onStateChanged?.('idle')
     }
   }
 
