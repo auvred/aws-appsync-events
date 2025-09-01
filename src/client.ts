@@ -53,6 +53,7 @@ type SubListener = {
 type Sub = {
   id: string
   isEstablished: boolean
+  isErrored: boolean
   listeners: Set<SubListener>
 }
 
@@ -136,6 +137,7 @@ export class ResettableTimer {
   cancel = (): void => {
     if (this.timerId != null) {
       clearTimeout(this.timerId)
+      this.timerId = null
     }
   }
 }
@@ -191,7 +193,7 @@ export class Client {
     }
     return this.subsByChannelName.get(channel)!
   }
-  private readonly pendingUnsubIds = new Set<string>()
+  private readonly pendingUnsubsBySubIds = new Map<string, Set<SubListener>>()
 
   private readonly retryBehavior: (attempt: number) => number
   private readonly onStateChanged: ((newState: ClientState) => void) | null
@@ -251,13 +253,13 @@ export class Client {
         // https://caniuse.com/mdn-api_crypto_randomuuid
         id: crypto.randomUUID(),
         isEstablished: false,
+        isErrored: false,
         listeners: new Set(),
       })
     }
 
     const tryCleanupListeners = () => {
-      sub.listeners.delete(listener)
-      if (sub.listeners.size === 0) {
+      if (sub.listeners.delete(listener) && sub.listeners.size === 0) {
         this.subsByChannelName.delete(channel)
         this.channelNamesById.delete(sub.id)
       }
@@ -266,6 +268,13 @@ export class Client {
     const listener: SubListener = {
       event,
       error: err => {
+        const pendingUnsubs = this.pendingUnsubsBySubIds.get(sub.id)
+        if (pendingUnsubs != null) {
+          pendingUnsubs.delete(listener)
+          if (pendingUnsubs.size === 0) {
+            this.pendingUnsubsBySubIds.delete(sub.id)
+          }
+        }
         tryCleanupListeners()
         error?.(err)
       },
@@ -291,13 +300,8 @@ export class Client {
             channel,
             authorization: this.authorizationHeaders,
           }))
-        } else {
-          if (this.pendingUnsubIds.delete(sub.id)) {
-            listener.established = established
-          }
-          if (sub.isEstablished) {
-            established?.()
-          }
+        } else if (sub.isEstablished) {
+          established?.()
         }
         break
     }
@@ -326,14 +330,19 @@ export class Client {
           const cleanup = () => {
             tryCleanupListeners()
             // tryCleanupListeners has side-effect, so the state could be changed
-            if (this.state.type === 'connected') {
+            if (this.state.type === 'connected' && sub.listeners.size === 0) {
               this.state.ws.send(JSON.stringify({ type: 'unsubscribe', id: sub.id }))
             }
           }
-          if (sub.isEstablished) {
+          if (sub.isEstablished || sub.isErrored) {
             cleanup()
             break
           }
+
+          let pendingUnsubs: Set<SubListener> | undefined
+          ;(pendingUnsubs = this.pendingUnsubsBySubIds.get(sub.id)) ?? this.pendingUnsubsBySubIds.set(sub.id, pendingUnsubs = new Set())
+          pendingUnsubs.add(listener)
+
           // We don't handle subscribe_error. In that case, we don't need to
           // explicitly unsubscribe.
           //
@@ -341,11 +350,12 @@ export class Client {
           // silently ignored. This is why we wait for the sub to establish
           // before unsubscribing.
           listener.established = () => {
-            this.pendingUnsubIds.delete(sub.id)
+            if (pendingUnsubs.delete(listener) && pendingUnsubs.size === 0) {
+              this.pendingUnsubsBySubIds.delete(sub.id)
+            }
             cleanup()
-            established?.()
           }
-          this.pendingUnsubIds.add(sub.id)
+
           break
         }
       }
@@ -491,6 +501,7 @@ export class Client {
                 throw new Error(`[aws-appsync-events bug] subscribe_error for unknown sub`)
               }
               const error = new Error('Subscribe error' + normalizeErrors(message.errors))
+              sub.isErrored = true
               for (const listener of sub.listeners) {
                 listener.error(error)
               }
@@ -530,12 +541,19 @@ export class Client {
         case 'connecting':
         case 'handshaking': {
           clearTimeout(this.state.idleTimerId)
-          for (const subId of this.pendingUnsubIds) {
+          for (const [subId, listeners] of this.pendingUnsubsBySubIds) {
             const channel = this.channelNamesById.get(subId)!
-            this.subsByChannelName.delete(channel)
-            this.channelNamesById.delete(subId)
-            this.pendingUnsubIds.delete(subId)
+            const sub = this.subsByChannelName.get(channel)!
+            for (const listener of listeners) {
+              sub.listeners.delete(listener)
+            }
+            if (sub.listeners.size === 0) {
+              this.subsByChannelName.delete(channel)
+              this.channelNamesById.delete(subId)
+            }
+            listeners.clear()
           }
+          this.pendingUnsubsBySubIds.clear()
           if (graceful) {
             if (this.state.type === 'connected') {
               this.onStateChanged?.('idle')
