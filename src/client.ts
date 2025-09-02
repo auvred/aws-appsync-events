@@ -691,6 +691,7 @@ export class Client {
 
   close = () => {
     switch (this.state.type) {
+      // TODO: auth-preparing - cancel
       // 'idle', 'auth-preparing', 'failed' - leave it as is
       case 'connecting':
       case 'handshaking':
