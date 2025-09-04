@@ -472,88 +472,7 @@ describe('Client', { timeout: 100 }, () => {
     })
   })
 
-  it('should establish both listeners and deliver data when subscribing twice during connect', async () => {
-    const { client, sockets } = newClient()
-
-    const { event: event1, established: est1, error: err1 } = await subscribeWithMocks(client, 'default/foo')
-
-    expect(client['state'].type).toBe('connecting')
-
-    const { event: event2, established: est2, error: err2 } = await subscribeWithMocks(client, 'default/foo')
-
-    const socket = sockets.get(0)
-    socket.openAndHandshake()
-
-    const subId = await socket.acceptSubscribe('default/foo')
-
-    expect(est1).toHaveBeenCalledOnce()
-    expect(err1).not.toBeCalled()
-    expect(est2).toHaveBeenCalledOnce()
-    expect(err2).not.toBeCalled()
-
-    socket.sendData(subId, { foo: 123 })
-
-    queueMicrotask(() => {
-      expect(event1).toHaveBeenCalledExactlyOnceWith({ foo: 123 })
-      expect(event2).toHaveBeenCalledExactlyOnceWith({ foo: 123 })
-    })
-  })
-
-  it('should queue second subscription during handshake and establish both after ack', async () => {
-    const { client, sockets } = newClient()
-
-    const { event: event1, established: est1, error: err1 } = await subscribeWithMocks(client, 'default/foo')
-
-    const socket = sockets.get(0)
-    socket.open()
-    expect(client['state'].type).toBe('handshaking')
-
-    const { event: event2, established: est2, error: err2 } = await subscribeWithMocks(client, 'default/foo')
-
-    socket.handshake()
-
-    const subId = await socket.acceptSubscribe('default/foo')
-
-    expect(est1).toHaveBeenCalledOnce()
-    expect(err1).not.toBeCalled()
-    expect(est2).toHaveBeenCalledOnce()
-    expect(err2).not.toBeCalled()
-
-    socket.sendData(subId, { foo: 123 })
-
-    queueMicrotask(() => {
-      expect(event1).toHaveBeenCalledExactlyOnceWith({ foo: 123 })
-      expect(event2).toHaveBeenCalledExactlyOnceWith({ foo: 123 })
-    })
-  })
-
-  it('should immediately establish the second same-channel subscription when already connected', async () => {
-    const { client, sockets } = newClient()
-
-    const { event: event1, established: est1, error: err1 } = await subscribeWithMocks(client, 'default/foo')
-
-    const socket = sockets.get(0)
-    socket.openAndHandshake()
-    expect(client['state'].type).toBe('connected')
-    const subId = await socket.acceptSubscribe('default/foo')
-
-    expect(est1).toHaveBeenCalledOnce()
-    expect(err1).not.toBeCalled()
-
-    const { event: event2, established: est2, error: err2 } = await subscribeWithMocks(client, 'default/foo')
-
-    expect(est2).toHaveBeenCalledOnce()
-    expect(err2).not.toBeCalled()
-
-    socket.sendData(subId, { foo: 123 })
-
-    queueMicrotask(() => {
-      expect(event1).toHaveBeenCalledExactlyOnceWith({ foo: 123 })
-      expect(event2).toHaveBeenCalledExactlyOnceWith({ foo: 123 })
-    })
-  })
-
-  it('should subscribe to a new channel and isolate events by channel when connected', async () => {
+  it('should subscribe to a new channel and isolate events', async () => {
     const { client, sockets } = newClient()
 
     const { event: event1, established: est1, error: err1 } = await subscribeWithMocks(client, 'default/foo')
@@ -566,12 +485,12 @@ describe('Client', { timeout: 100 }, () => {
     expect(est1).toHaveBeenCalledOnce()
     expect(err1).not.toBeCalled()
 
-    const { event: event2, established: est2, error: err2 } = await subscribeWithMocks(client, 'default/bar')
+    const { event: event2, established: est2, error: err2 } = await subscribeWithMocks(client, 'default/foo')
 
     expect(est2).not.toBeCalled()
     expect(err2).not.toBeCalled()
 
-    const subId2 = await socket.acceptSubscribe('default/bar')
+    const subId2 = await socket.acceptSubscribe('default/foo')
 
     socket.sendData(subId1, { foo: 123 })
 
@@ -997,7 +916,7 @@ describe('Client', { timeout: 100 }, () => {
     expect(socket2.consumeMessage()).toBeUndefined()
   })
 
-  it('should resubscribe only remaining listener after one of two unsubscribes during backoff', async () => {
+  it('should resubscribe with one sub', async () => {
     const { client, sockets } = newClient()
 
     const { event: event1, established: est1, error: err1 } = await subscribeWithMocks(client, 'default/foo')
@@ -1005,6 +924,7 @@ describe('Client', { timeout: 100 }, () => {
 
     const socket1 = sockets.get(0)
     socket1.openAndHandshake()
+    const subId1 = await socket1.acceptSubscribe('default/foo')
     await socket1.acceptSubscribe('default/foo')
 
     expect(est1).toHaveBeenCalledOnce()
@@ -1022,74 +942,15 @@ describe('Client', { timeout: 100 }, () => {
     expect(client['state'].type).toBe('connecting')
     const socket2 = sockets.get(1)
     socket2.openAndHandshake()
-    const subId2 = await socket2.acceptSubscribe('default/foo')
-    socket2.sendData(subId2, { foo: 123 })
+    const subId3 = await socket2.acceptSubscribe('default/foo')
+    socket2.sendData(subId3, { foo: 123 })
+
+    expect(subId3).toBe(subId1)
 
     queueMicrotask(() => {
       expect(event1).toHaveBeenCalledExactlyOnceWith({ foo: 123 })
       expect(event2).not.toBeCalled()
     })
-  })
-
-  it('should remove only the unsubscribed listener when multiple listeners exist on the same channel', async () => {
-    const { client, sockets } = newClient()
-
-    const { established: est1, event: event1 } = await subscribeWithMocks(client, 'default/foo')
-    const socket = sockets.get(0)
-    socket.openAndHandshake()
-    const subId = await socket.consumeSubscribeRequest('default/foo')
-
-    const { sub: sub2, established: est2, event: event2 } = await subscribeWithMocks(client, 'default/foo')
-    sub2.unsubscribe()
-
-    socket.subscribeSuccess(subId)
-    queueMicrotask(() => {
-      expect(est1).toHaveBeenCalledOnce()
-      expect(est2).not.toBeCalled()
-    })
-
-    queueMicrotask(() => {
-      socket.sendData(subId, { foo: 123 })
-      queueMicrotask(() => {
-        expect(event1).toHaveBeenCalledExactlyOnceWith({ foo: 123 })
-        expect(event2).not.toBeCalled()
-      })
-    })
-  })
-
-  it('should delay establishment of second listener until first subscription is acknowledged', async () => {
-    const { client, sockets } = newClient({})
-
-    const { established: est1 } = await subscribeWithMocks(client, 'default/foo')
-    const socket = sockets.get(0)
-    socket.openAndHandshake()
-    const subId = await socket.consumeSubscribeRequest('default/foo')
-
-    const { established: est2 } = await subscribeWithMocks(client, 'default/foo')
-
-    expect(est1).not.toBeCalled()
-    expect(est2).not.toBeCalled()
-
-    socket.subscribeSuccess(subId)
-
-    queueMicrotask(() => {
-      expect(est1).toHaveBeenCalledOnce()
-      expect(est2).toHaveBeenCalledOnce()
-    })
-  })
-
-  it('should immediately establish second listener when first subscription is already acknowledged', async () => {
-    const { client, sockets } = newClient({})
-
-    const { established: est1 } = await subscribeWithMocks(client, 'default/foo')
-    const socket = sockets.get(0)
-    socket.openAndHandshake()
-    await socket.acceptSubscribe('default/foo')
-
-    const { established: est2 } = await subscribeWithMocks(client, 'default/foo')
-
-    expect(est1).toHaveBeenCalledOnce()
-    expect(est2).toHaveBeenCalledOnce()
   })
 
   it('should clear unfinished unsubscribes when socket disconnects and not resubscribe them', async () => {
@@ -1126,6 +987,7 @@ describe('Client', { timeout: 100 }, () => {
     await socket1.consumeSubscribeRequest('default/bar')
 
     await subscribeWithMocks(client, 'default/foo')
+    await socket1.consumeSubscribeRequest('default/foo')
 
     socket1.close()
 
@@ -1134,8 +996,8 @@ describe('Client', { timeout: 100 }, () => {
 
     const socket2 = sockets.get(1)
     socket2.openAndHandshake()
-    await socket2.consumeSubscribeRequest('default/foo')
     await socket2.consumeSubscribeRequest('default/bar')
+    await socket2.consumeSubscribeRequest('default/foo')
   })
 
   it('should allow unsubscribe during backoff without sending subscribe or firing callbacks', async () => {
@@ -1635,6 +1497,17 @@ describe('Client', { timeout: 100 }, () => {
     expect(client['state'].type).toBe('connecting')
   })
 
+  it('should ignore redundant connect call while auth-preparing', async () => {
+    const { client, sockets } = newClient()
+
+    client.connect()
+    expect(client['state'].type).toBe('auth-preparing')
+    client.connect()
+    expect(client['state'].type).toBe('auth-preparing')
+    await tick
+    expect(sockets.count()).toBe(1)
+  })
+
   it('should ignore redundant connect call while already connecting', async () => {
     const { client, sockets } = newClient()
 
@@ -1815,6 +1688,7 @@ describe('Client', { timeout: 100 }, () => {
     const subId = await socket.consumeSubscribeRequest('default/foo')
   
     const { sub: sub2, error: err2 } = await subscribeWithMocks(client, 'default/foo')
+    await socket.consumeSubscribeRequest('default/foo')
     sub2.unsubscribe()
   
     socket.send({
@@ -1826,7 +1700,7 @@ describe('Client', { timeout: 100 }, () => {
     queueMicrotask(() => {
       expect(est1).not.toBeCalled()
       expect(err1).toHaveBeenCalledTimes(1)
-      expect(err2).toHaveBeenCalledTimes(1)
+      expect(err2).not.toBeCalled()
     })
   
     socket.close()
@@ -1842,6 +1716,7 @@ describe('Client', { timeout: 100 }, () => {
     const socket = sockets.get(0)
     socket.openAndHandshake()
     const subId = await socket.consumeSubscribeRequest('default/foo')
+    await socket.consumeSubscribeRequest('default/foo')
   
     sub2.unsubscribe()
   
@@ -1857,90 +1732,6 @@ describe('Client', { timeout: 100 }, () => {
   
     expect(() => socket.close()).not.toThrow()
     expect(client['state'].type).toBe('backoff')
-  })
-
-  it('adding new subscriber in established hook', async () => {
-    const { client, sockets } = newClient()
-
-    const { established: est1 } = await subscribeWithMocks(client, 'default/foo')
-    const socket = sockets.get(0)
-    socket.openAndHandshake()
-
-    await tick
-    const subId = socket.consumeSubscribeRequestSync('default/foo')
-    socket.subscribeSuccess(subId)
-
-    let est2!: typeof est1
-    est1.mockImplementation(() => ({ established: est2 } = subscribeWithMocksSync(client, 'default/foo')))
-
-    expect(est1).not.toBeCalled()
-    queueMicrotask(() => {
-      expect(est1).toHaveBeenCalledOnce()
-      expect(est2).not.toBeCalled()
-
-      queueMicrotask(() => {
-        expect(est2).toHaveBeenCalledOnce()
-      })
-    })
-    queueMicrotask(() => {
-      expect(est2).not.toBeCalled()
-    })
-  })
-
-  it('unsubscribing in error hook should not prevent sibling error hook', async () => {
-    const { client, sockets } = newClient()
-
-    const { error: err1 } = await subscribeWithMocks(client, 'default/foo')
-    const { error: err2, sub: sub2 } = await subscribeWithMocks(client, 'default/foo')
-    const socket = sockets.get(0)
-    socket.openAndHandshake()
-
-    await tick
-    const subId = socket.consumeSubscribeRequestSync('default/foo')
-    socket.subscribeSuccess(subId)
-
-    err1.mockImplementation(() => sub2.unsubscribe())
-
-    socket.send({
-      type: 'subscribe_error',
-      id: subId,
-      errors: [ { errorType: 'UnauthorizedException' }],
-    })
-
-    expect(err1).not.toBeCalled()
-    expect(err2).not.toBeCalled()
-    queueMicrotask(() => {
-      expect(err1).toHaveBeenCalledOnce()
-      expect(err2).toHaveBeenCalledOnce()
-    })
-
-    queueMicrotask(() => {
-      socket.consumeUnsubscribeRequest(subId)
-    })
-  })
-
-  it('unsubscribing in event hook should not prevent sibling next hook', async () => {
-    const { client, sockets } = newClient()
-
-    const { event: event1 } = await subscribeWithMocks(client, 'default/foo')
-    const { event: event2, sub: sub2 } = await subscribeWithMocks(client, 'default/foo')
-    const socket = sockets.get(0)
-    socket.openAndHandshake()
-
-    await tick
-    const subId = socket.consumeSubscribeRequestSync('default/foo')
-    socket.subscribeSuccess(subId)
-
-    event1.mockImplementation(() => sub2.unsubscribe())
-
-    socket.sendData(subId, { foo: 123 })
-
-    expect(event1).not.toBeCalled()
-    expect(event2).not.toBeCalled()
-    queueMicrotask(() => {
-      expect(event1).toHaveBeenCalledExactlyOnceWith({ foo: 123 })
-      expect(event2).toHaveBeenCalledExactlyOnceWith({ foo: 123 })
-    })
   })
 
   it('should reset isEstablished on connection loss', async () => {

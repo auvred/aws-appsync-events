@@ -102,17 +102,13 @@ export function awsIamAuthorizer(config: {
   }
 }
 
-type SubListener = {
-  event: (event: unknown) => void
-  error: (error: Error) => void
-  established: (() => void) | undefined
-}
-
 type Sub = {
   id: string
   isEstablished: boolean
-  isErrored: boolean
-  listeners: Set<SubListener>
+  channel: string
+  event: (event: unknown) => void
+  error: (error: Error) => void
+  established: (() => void) | undefined
 }
 
 export type ClientState = 'idle' | 'connected' | 'backoff' | 'failed'
@@ -147,10 +143,6 @@ export type ClientOpts = {
    */
   idleConnectionKeepAliveTimeMs?: number | false | undefined
 }
-
-// TODO: maybe schedule all callbacks to run on the next tick, 
-// so they don't cause side effects that could interfere with 
-// the current flow
 
 export type SubscribeOpts = {
   /**
@@ -223,7 +215,7 @@ export class Client {
   readonly realtimeEndpoint: string
   private wsCtor: WebSocketAdapterConstructor = WebSocket
 
-  private readonly subsByChannelName = (client => new (class _ extends Map<string, Sub> {
+  private readonly subsById = (client => new (class _ extends Map<string, Sub> {
     override set(key: string, value: Sub) {
       switch (client.state.type) {
         case 'connecting':
@@ -251,15 +243,8 @@ export class Client {
       return res
     }
   })())(this)
-  private readonly channelNamesById = new Map<string, string>()
-  private subById = (id: string) => {
-    const channel = this.channelNamesById.get(id)
-    if (channel == null) {
-      return null
-    }
-    return this.subsByChannelName.get(channel)!
-  }
-  private readonly pendingUnsubsBySubIds = new Map<string, Set<SubListener>>()
+
+  private readonly pendingUnsubIds = new Set<string>()
 
   private readonly retryBehavior: (attempt: number) => number | false
   private readonly onStateChanged: ((newState: ClientState) => void) | null
@@ -311,44 +296,28 @@ export class Client {
 
   subscribe = (channel: string, { event, error, established }: SubscribeOpts) => {
     channel = normalizeChannel(channel)
-    // TODO: dedupe by auth type
-    // TODO: test what if two subscriptions are created for the same channel (in AppSync)
-    let sub = this.subsByChannelName.get(channel)
-    let firstSub = false
-    if (sub == null) {
-      firstSub = true
-      this.subsByChannelName.set(channel, sub = {
-        id: randomId(),
-        isEstablished: false,
-        isErrored: false,
-        listeners: new Set(),
-      })
-    }
+    const id = randomId()
 
     const callEstablished = established && (() => queueMicrotask(established))
     const callError = error && ((err: Error) => queueMicrotask(() => error(err)))
-
-    const tryCleanupListeners = () => {
-      if (sub.listeners.delete(listener) && sub.listeners.size === 0) {
-        this.subsByChannelName.delete(channel)
-        this.channelNamesById.delete(sub.id)
-      }
+    const cleanupSub = () => {
+      this.pendingUnsubIds.delete(id)
+      this.subsById.delete(id)
     }
 
-    const listener: SubListener = {
+    const sub: Sub = {
+      id,
+      isEstablished: false,
+      channel,
       event: (e) => queueMicrotask(() => event(e)),
       error: err => {
-        const pendingUnsubs = this.pendingUnsubsBySubIds.get(sub.id)
-        if (pendingUnsubs?.delete(listener) && pendingUnsubs.size === 0) {
-          this.pendingUnsubsBySubIds.delete(sub.id)
-        }
         callError?.(err)
-        tryCleanupListeners()
+        cleanupSub()
       },
       established: callEstablished,
     }
-    sub.listeners.add(listener)
-    this.channelNamesById.set(sub.id, channel)
+    this.subsById.set(id, sub)
+
 
     switch (this.state.type) {
       // We can ignore 'auth-preparing', 'connecting', 'handshaking' and 'backoff',
@@ -360,16 +329,13 @@ export class Client {
         this.connect()
         break
       case 'connected':
-        if (firstSub) {
-          this.wsSubscribe(this.state.ws, sub.id, channel)
-        } else if (sub.isEstablished) {
-          callEstablished?.()
-        }
-        break
+        this.wsSubscribe(this.state.ws, id, channel)
     }
 
     let unsubscribed = false
-    const unsubscribe = () => {
+
+    return {
+      unsubscribe: () => {
       if (unsubscribed) {
         return
       }
@@ -387,24 +353,23 @@ export class Client {
         case 'connecting':
         case 'handshaking':
         case 'failed':
-          tryCleanupListeners()
+          cleanupSub()
           break
         case 'connected': {
+          this.pendingUnsubIds.add(id)
+
           const cleanup = () => {
-            tryCleanupListeners()
-            // tryCleanupListeners has side-effect, so the state could be changed
-            if (this.state.type === 'connected' && sub.listeners.size === 0) {
-              this.state.ws.send(JSON.stringify({ type: 'unsubscribe', id: sub.id }))
+            cleanupSub()
+            // cleanupSub has side-effect, so the state could be changed
+            if (this.state.type === 'connected') {
+              this.state.ws.send(JSON.stringify({ type: 'unsubscribe', id: id }))
             }
           }
-          if (sub.isEstablished || sub.isErrored) {
+
+          if (sub.isEstablished) {
             cleanup()
             break
           }
-
-          let pendingUnsubs: Set<SubListener> | undefined
-          ;(pendingUnsubs = this.pendingUnsubsBySubIds.get(sub.id)) ?? this.pendingUnsubsBySubIds.set(sub.id, pendingUnsubs = new Set())
-          pendingUnsubs.add(listener)
 
           // We don't handle subscribe_error. In that case, we don't need to
           // explicitly unsubscribe.
@@ -412,25 +377,15 @@ export class Client {
           // If unsubscribe is sent at the same time as subscribe, it will be
           // silently ignored. This is why we wait for the sub to establish
           // before unsubscribing.
-          listener.established = () => {
-            if (pendingUnsubs.delete(listener) && pendingUnsubs.size === 0) {
-              this.pendingUnsubsBySubIds.delete(sub.id)
-            }
-            cleanup()
-          }
-
-          break
+          sub.established = cleanup
         }
       }
-    }
-
-    return {
-      unsubscribe,
+    },
     }
   }
 
   connect: () => void = async () => {
-    const dontInitConnection = this.idleConnectionKeepAliveTimeMs === false && this.subsByChannelName.size === 0
+    const dontInitConnection = this.idleConnectionKeepAliveTimeMs === false && this.subsById.size === 0
     let attempt = 0
     switch (this.state.type) {
       case 'backoff':
@@ -536,7 +491,7 @@ export class Client {
                 idleTimerId: this.state.idleTimerId,
                 closeWs,
               }
-              if (this.subsByChannelName.size === 0) {
+              if (this.subsById.size === 0) {
                 // - if connect was called explicitly and idleConnectionKeepAliveTimeMs is false,
                 // connect early returns
                 // - if connect was called implicitly (via subscribe), idleConnectionKeepAliveTimeMs === false
@@ -547,8 +502,8 @@ export class Client {
                 clearTimeout(this.state.idleTimerId)
                 this.state.idleTimerId = setTimeout(closeWs, this.idleConnectionKeepAliveTimeMs as number)
               }
-              for (const [channel, sub] of this.subsByChannelName) {
-                this.wsSubscribe(this.state.ws, sub.id, channel)
+              for (const sub of this.subsById.values()) {
+                this.wsSubscribe(this.state.ws, sub.id, sub.channel)
               }
               this.onStateChanged?.('connected')
               break
@@ -564,39 +519,25 @@ export class Client {
               this.state.timeoutTimer.reset()
               break
             case 'subscribe_success': {
-              const sub = this.subById(message.id)
+              const sub = this.subsById.get(message.id)
               if (sub == null) {
                 throw new Error(`[aws-appsync-events bug] subscribe_success for unknown sub`)
               }
               sub.isEstablished = true
-              for (const listener of sub.listeners) {
-                listener.established?.()
-              }
+              sub.established?.()
               break
             }
             case 'subscribe_error': {
-              const sub = this.subById(message.id)
+              const sub = this.subsById.get(message.id)
               if (sub == null) {
                 throw new Error(`[aws-appsync-events bug] subscribe_error for unknown sub`)
               }
-              const error = new Error('Subscribe error' + normalizeErrors(message.errors))
-              sub.isErrored = true
-              for (const listener of sub.listeners) {
-                listener.error(error)
-              }
+              sub.error(new Error('Subscribe error' + normalizeErrors(message.errors)))
               break
             }
-            case 'data': {
-              const channel = this.channelNamesById.get(message.id)
-              if (channel == null) {
-                break
-              }
-              const event = JSON.parse(message.event)
-              for (const listener of this.subsByChannelName.get(channel)!.listeners) {
-                listener.event?.(event)
-              }
+            case 'data':
+              this.subsById.get(message.id)?.event(JSON.parse(message.event))
               break
-            }
             case 'unsubscribe_success':
               break
             case 'unsubscribe_error':
@@ -623,23 +564,13 @@ export class Client {
           if (this.state.type === 'handshaking') {
             clearTimeout(this.state.timerId)
           }
-          for (const [subId, listeners] of this.pendingUnsubsBySubIds) {
-            const channel = this.channelNamesById.get(subId)!
-            const sub = this.subsByChannelName.get(channel)!
-            for (const listener of listeners) {
-              sub.listeners.delete(listener)
-            }
-            if (sub.listeners.size === 0) {
-              this.subsByChannelName.delete(channel)
-              this.channelNamesById.delete(subId)
-            }
-            listeners.clear()
+          for (const subId of this.pendingUnsubIds) {
+            this.subsById.delete(subId)
           }
-          for (const sub of this.subsByChannelName.values()) {
+          for (const sub of this.subsById.values()) {
             sub.isEstablished = false
-            sub.isErrored = false
           }
-          this.pendingUnsubsBySubIds.clear()
+          this.pendingUnsubIds.clear()
           if (graceful) {
             if (this.state.type === 'connected') {
               this.onStateChanged?.('idle')
@@ -702,6 +633,7 @@ export class Client {
     }
   }
 
+  // TODO: split batches
   publish = async (channel: string, events: unknown[]) => {
     events = events.map(e => JSON.stringify(e))
     const response = await fetch(`https://${this.httpEndpoint}/event`, {
