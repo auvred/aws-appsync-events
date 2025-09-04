@@ -35,7 +35,7 @@ function normalizeChannel(channel: string) {
 
 function normalizeErrors(errors: unknown) {
   return (Array.isArray(errors)
-                ? (`: ` + errors.map((e: any) => String(e?.errorType) + (e?.message != null ? ` (${String(e.message)})` : '')).join(', '))
+                ? (`: ` + errors.map((e: any) => String(e?.errorType) + (e?.errorCode != null ? ` ${String(e.errorCode)}` : '') + (e?.message != null ? ` (${String(e.message)})` : '')).join(', '))
                 : '')
 }
 
@@ -325,6 +325,9 @@ export class Client {
       })
     }
 
+    const callEstablished = established && (() => queueMicrotask(established))
+    const callError = error && ((err: Error) => queueMicrotask(() => error(err)))
+
     const tryCleanupListeners = () => {
       if (sub.listeners.delete(listener) && sub.listeners.size === 0) {
         this.subsByChannelName.delete(channel)
@@ -333,16 +336,16 @@ export class Client {
     }
 
     const listener: SubListener = {
-      event,
+      event: (e) => queueMicrotask(() => event(e)),
       error: err => {
         const pendingUnsubs = this.pendingUnsubsBySubIds.get(sub.id)
         if (pendingUnsubs?.delete(listener) && pendingUnsubs.size === 0) {
           this.pendingUnsubsBySubIds.delete(sub.id)
         }
-        error?.(err)
+        callError?.(err)
         tryCleanupListeners()
       },
-      established,
+      established: callEstablished,
     }
     sub.listeners.add(listener)
     this.channelNamesById.set(sub.id, channel)
@@ -360,7 +363,7 @@ export class Client {
         if (firstSub) {
           this.wsSubscribe(this.state.ws, sub.id, channel)
         } else if (sub.isEstablished) {
-          established?.()
+          callEstablished?.()
         }
         break
     }
@@ -458,6 +461,14 @@ export class Client {
       .replace(/\//g, '_')
       .replace(/=+$/g, '')
 
+    // If two connects are auth-preparing simultaneously, the first one skips this
+    // condition and synchronously changes the state to 'connecting' below. The
+    // second connect then cannot skip this condition and abandons its connection
+    // attempt.
+    if (this.state.type !== 'auth-preparing') {
+      return
+    }
+
     // TODO: think about memory leaks
     // See https://websockets.spec.whatwg.org/#garbage-collection
     const ws = new this.wsCtor(`wss://${this.realtimeEndpoint}/event/realtime`, [
@@ -512,53 +523,40 @@ export class Client {
         // 'backoff', 'failed' - should never happen: the 'message' listener is
         // removed before leaving the 'connected' state
         case 'handshaking':
-          // TODO:
-          /*
-{
-  errors: [
-    {
-      errorType: 'UnauthorizedException',
-      message: 'You are not authorized to make this call.',
-      errorCode: 401
-    }
-  ],
-  type: 'connection_error'
-}
-
-{
-  errors: [ { errorType: 'UnauthorizedException', errorCode: 401 } ],
-  type: 'connection_error'
-}
-          */
           clearTimeout(this.state.timerId)
-          if (message.type !== 'connection_ack') {
-            throw new Error(`[aws-appsync-events bug] handshake error: expected "connection_ack" but got ${JSON.stringify(message.type)}`)
+          switch (message.type) {
+            case 'connection_ack':
+              this.state = {
+                type: 'connected',
+                ws,
+                timeoutTimer: new ResettableTimer(message.connectionTimeoutMs, () => {
+                  ws.close()
+                  connectionEnded(false)
+                }),
+                idleTimerId: this.state.idleTimerId,
+                closeWs,
+              }
+              if (this.subsByChannelName.size === 0) {
+                // - if connect was called explicitly and idleConnectionKeepAliveTimeMs is false,
+                // connect early returns
+                // - if connect was called implicitly (via subscribe), idleConnectionKeepAliveTimeMs === false
+                // situation is already handled (because the current state is 'handshaking')
+                if (this.idleConnectionKeepAliveTimeMs === false) {
+                  throw new Error('[aws-appsync-events bug] expected idle connection keep alive to be enabled')
+                }
+                clearTimeout(this.state.idleTimerId)
+                this.state.idleTimerId = setTimeout(closeWs, this.idleConnectionKeepAliveTimeMs as number)
+              }
+              for (const [channel, sub] of this.subsByChannelName) {
+                this.wsSubscribe(this.state.ws, sub.id, channel)
+              }
+              this.onStateChanged?.('connected')
+              break
+            case 'connection_error':
+              throw new Error('[aws-appsync-events] connection error' + normalizeErrors(message.errors))
+            default:
+              throw new Error(`[aws-appsync-events bug] handshake error: expected "connection_ack" but got ${JSON.stringify(message.type)}`)
           }
-          this.state = {
-            type: 'connected',
-            ws,
-            timeoutTimer: new ResettableTimer(message.connectionTimeoutMs, () => {
-              ws.close()
-              connectionEnded(false)
-            }),
-            idleTimerId: this.state.idleTimerId,
-            closeWs,
-          }
-          if (this.subsByChannelName.size === 0) {
-            // - if connect was called explicitly and idleConnectionKeepAliveTimeMs is false,
-            // connect early returns
-            // - if connect was called implicitly (via subscribe), idleConnectionKeepAliveTimeMs === false
-            // situation is already handled (because the current state is 'handshaking')
-            if (this.idleConnectionKeepAliveTimeMs === false) {
-              throw new Error('[aws-appsync-events bug] expected idle connection keep alive to be enabled')
-            }
-            clearTimeout(this.state.idleTimerId)
-            this.state.idleTimerId = setTimeout(closeWs, this.idleConnectionKeepAliveTimeMs as number)
-          }
-          for (const [channel, sub] of this.subsByChannelName) {
-            this.wsSubscribe(this.state.ws, sub.id, channel)
-          }
-          this.onStateChanged?.('connected')
           break
         case 'connected':
           switch (message.type) {
@@ -571,8 +569,7 @@ export class Client {
                 throw new Error(`[aws-appsync-events bug] subscribe_success for unknown sub`)
               }
               sub.isEstablished = true
-              // copy listeners (established() can add new listeners)
-              for (const listener of Array.from(sub.listeners)) {
+              for (const listener of sub.listeners) {
                 listener.established?.()
               }
               break
@@ -584,8 +581,6 @@ export class Client {
               }
               const error = new Error('Subscribe error' + normalizeErrors(message.errors))
               sub.isErrored = true
-              // error() can add new listeners; they're always appended at the end,
-              // and are iterated here as well
               for (const listener of sub.listeners) {
                 listener.error(error)
               }
@@ -691,8 +686,10 @@ export class Client {
 
   close = () => {
     switch (this.state.type) {
-      // TODO: auth-preparing - cancel
-      // 'idle', 'auth-preparing', 'failed' - leave it as is
+      // 'idle', 'failed' - leave it as is
+      case 'auth-preparing':
+        this.state = { type: 'idle' }
+        break
       case 'connecting':
       case 'handshaking':
       case 'connected':
