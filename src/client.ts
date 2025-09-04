@@ -132,6 +132,7 @@ type Sub = {
   event: (event: unknown) => void
   error: (error: Error) => void
   established: (() => void) | undefined
+  authorizer: Authorizer
 }
 
 export type ClientState = 'idle' | 'connected' | 'backoff' | 'failed'
@@ -165,6 +166,20 @@ export type ClientOpts = {
    * @default 5000 (5 seconds)
    */
   idleConnectionKeepAliveTimeMs?: number | false | undefined
+
+  /**
+   * The default authorizer for `subscribe` requests.  
+   * If no specific authorizer is provided for a `subscribe()` call, this default authorizer will be used.
+   * By default, this is set to client's `connectionAuthorizer`.
+   */
+  defaultSubscribeAuthorizer?: Authorizer | undefined
+
+  /**
+   * The default authorizer for `publish` requests.  
+   * If no specific authorizer is provided for a `publish()` call, this default authorizer will be used.
+   * By default, this is set to client's `connectionAuthorizer`.
+   */
+  defaultPublishAuthorizer?: Authorizer | undefined
 }
 
 export type SubscribeOpts = {
@@ -183,7 +198,19 @@ export type SubscribeOpts = {
    * May be invoked multiple times, if the underlying connection is
    * re-established after a retry.
    */
-  established?: () => void
+  established?: (() => void) | undefined
+
+  /**
+   * By default, client's `defaultSubscribeAuthorizer` will be used
+   */
+  authorizer?: Authorizer | undefined
+}
+
+export type PublishOpts = {
+  /**
+   * By default, client's `defaultPublishAuthorizer` will be used
+   */
+  authorizer?: Authorizer | undefined
 }
 
 // https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
@@ -304,20 +331,27 @@ export class Client {
     type: 'idle',
   }
 
-  constructor(endpoint: string, readonly authorizer: Authorizer, {
+  private readonly defaultSubscribeAuthorizer: Authorizer
+  private readonly defaultPublishAuthorizer: Authorizer
+
+  constructor(endpoint: string, readonly connectionAuthorizer: Authorizer, {
     retryBehavior = exponentialBackoffRetryBehavior(3),
     onStateChanged,
     idleConnectionKeepAliveTimeMs = 5_000,
-  }: ClientOpts = {}) {
+    defaultSubscribeAuthorizer = connectionAuthorizer,
+    defaultPublishAuthorizer = connectionAuthorizer,
+  }: ClientOpts | undefined = {}) {
     const endpoints = parseEndpoint(endpoint)
     this.httpEndpoint = endpoints.http
     this.realtimeEndpoint = endpoints.realtime
     this.retryBehavior = retryBehavior
     this.onStateChanged = onStateChanged ?? null
     this.idleConnectionKeepAliveTimeMs = idleConnectionKeepAliveTimeMs
+    this.defaultSubscribeAuthorizer = defaultSubscribeAuthorizer
+    this.defaultPublishAuthorizer = defaultPublishAuthorizer
   }
 
-  subscribe = (channel: string, { event, error, established }: SubscribeOpts) => {
+  subscribe = (channel: string, { event, error, established, authorizer }: SubscribeOpts) => {
     channel = normalizeChannel(channel)
     const id = randomId()
 
@@ -338,6 +372,7 @@ export class Client {
         cleanupSub()
       },
       established: callEstablished,
+      authorizer: authorizer ?? this.defaultSubscribeAuthorizer,
     }
     this.subsById.set(id, sub)
 
@@ -352,7 +387,7 @@ export class Client {
         this.connect()
         break
       case 'connected':
-        this.wsSubscribe(this.state.ws, id, channel)
+        this.wsSubscribe(this.state.ws, id, channel, sub.authorizer)
     }
 
     let unsubscribed = false
@@ -434,7 +469,7 @@ export class Client {
 
     this.state = { type: 'auth-preparing' }
 
-    const authPayload = btoa(JSON.stringify(await this.authorizationHeaders({ type: 'connect' })))
+    const authPayload = btoa(JSON.stringify(await this.authorizationHeaders({ type: 'connect' }, this.connectionAuthorizer)))
       .replace(/\+/g, '-')
       .replace(/\//g, '_')
       .replace(/=+$/g, '')
@@ -526,7 +561,7 @@ export class Client {
                 this.state.idleTimerId = setTimeout(closeWs, this.idleConnectionKeepAliveTimeMs as number)
               }
               for (const sub of this.subsById.values()) {
-                this.wsSubscribe(this.state.ws, sub.id, sub.channel)
+                this.wsSubscribe(this.state.ws, sub.id, sub.channel, sub.authorizer)
               }
               this.onStateChanged?.('connected')
               break
@@ -668,9 +703,12 @@ export class Client {
     }
   }
 
-  publish = async (channel: string, events: unknown[]) => {
+  publish = async (channel: string, events: unknown[], { authorizer }: PublishOpts | undefined = {}) => {
     if (events.length === 0) {
       return
+    }
+    if (authorizer == null) {
+      authorizer = this.defaultPublishAuthorizer
     }
     const batches: string[][] = [[]]
     for (const event of events) {
@@ -689,7 +727,7 @@ export class Client {
           let attempt = 0
           while (true) {
             try {
-              const { host: _, ...authHeaders } = await this.authorizationHeaders({ type: 'publish', channel, events: batch })
+              const { host: _, ...authHeaders } = await this.authorizationHeaders({ type: 'publish', channel, events: batch }, authorizer)
               const response = await fetch(`https://${this.httpEndpoint}/event`, {
                 method: 'POST',
                 headers: {
@@ -727,21 +765,21 @@ export class Client {
     )
   }
 
-  private authorizationHeaders = async (message: AuthorizerOpts['message']) => {
-    return await this.authorizer({
+  private authorizationHeaders = async (message: AuthorizerOpts['message'], authorizer: Authorizer) => {
+    return await authorizer({
       httpEndpoint: this.httpEndpoint,
       realtimeEndpoint: this.realtimeEndpoint,
       message
     })
   }
 
-  private wsSubscribe = async (ws: WebSocketAdapter, subId: string, channel: string) => ws.send(JSON.stringify({
+  private wsSubscribe = async (ws: WebSocketAdapter, subId: string, channel: string, authorizer: Authorizer) => ws.send(JSON.stringify({
     type: 'subscribe',
     id: subId,
     channel,
     authorization: await this.authorizationHeaders({
       type: 'subscribe',
       channel,
-    }),
+    }, authorizer),
   }))
 }

@@ -340,13 +340,13 @@ describe('Client', { timeout: 100 }, () => {
       return JSON.parse(message)
     }
 
-    consumeSubscribeRequestSync = (channel: string): string => {
+    consumeSubscribeRequestSync = (channel: string, authorization: unknown = expect.any(Object)): string => {
       const msg = this.consumeMessage()
       expect(msg).toEqual({
         type: 'subscribe',
         id: expect.any(String),
         channel,
-        authorization: expect.any(Object),
+        authorization,
       })
       return msg.id
     }
@@ -1875,5 +1875,38 @@ describe('Client', { timeout: 100 }, () => {
     socket.openAndHandshake()
     await socket.consumeSubscribeRequest('default/foo')
     socket.send({ type: 'data', id: 'foo' })
+  })
+
+  it('should use defaultSubscribeAuthorizer if provided', async () => {
+    const { client, sockets } = newClient({
+      defaultSubscribeAuthorizer: apiKeyAuthorizer('bar'),
+    })
+
+    await subscribeWithMocks(client, 'default/foo')
+    const socket = sockets.get(0)
+    socket.openAndHandshake()
+
+    await tick
+    socket.consumeSubscribeRequestSync('default/foo', { 
+      host: client.httpEndpoint,
+      'x-api-key': 'bar',
+    })
+  })
+
+  it('should use custom subscribe() authorizer if provided', async () => {
+    const { client, sockets } = newClient({
+      defaultSubscribeAuthorizer: apiKeyAuthorizer('bar'),
+    })
+
+    client.subscribe('default/foo', { event: () => {}, authorizer: apiKeyAuthorizer('baz') })
+    await tick
+    const socket = sockets.get(0)
+    socket.openAndHandshake()
+
+    await tick
+    socket.consumeSubscribeRequestSync('default/foo', { 
+      host: client.httpEndpoint,
+      'x-api-key': 'baz',
+    })
   })
 })

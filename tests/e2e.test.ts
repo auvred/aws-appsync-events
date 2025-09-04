@@ -41,6 +41,27 @@ test('publish batch split', async () => {
   assert.sameDeepMembers(event.mock.calls, events.map(e => [e]))
 })
 
+test('custom authorizer', async () => {
+  const authorizer = awsIamAuthorizer({
+    accessKeyId: ACCESS_KEY_ID,
+    secretAccessKey: SECRET_ACCESS_KEY,
+    region: REGION,
+  })
+  const client = new Client(API_ENDPOINT, apiKeyAuthorizer(API_KEY))
+
+  const event = vi.fn()
+  const established = vi.fn()
+  client.subscribe('iam-auth/foo', { event, established, authorizer })
+
+  await expect.poll(() => established).toHaveBeenCalledOnce()
+
+  await client.publish('iam-auth/foo', ['foo', { bar: [123] }], { authorizer })
+
+  await expect.poll(() => event).toHaveBeenCalledTimes(2)
+
+  assert.sameDeepMembers(event.mock.calls, [['foo'], [{ bar: [123] }]])
+})
+
 test('aws iam auth', async () => {
   const client = new Client(API_ENDPOINT, awsIamAuthorizer({
     accessKeyId: ACCESS_KEY_ID,
