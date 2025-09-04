@@ -3,10 +3,14 @@ export {
   type ClientState,
   type AuthorizerOpts,
   type Authorizer,
+  type SubscribeOpts,
   Client, 
-  exponentialBackoffRetryBehavior 
-} from './client.js'
 
-export {
-  sigV4
-} from './sigv4.js'
+  exponentialBackoffRetryBehavior,
+
+  apiKeyAuthorizer,
+  cognitoUserPoolsAuthorizer,
+  openIdConnectAuthorizer,
+  lambdaAuthorizer,
+  awsIamAuthorizer,
+} from './client.js'

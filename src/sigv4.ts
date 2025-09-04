@@ -1,6 +1,9 @@
+// https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_sigv-create-signed-request.html
+
 let encoder: TextEncoder | null = null
 
 const arrayBufferHex: (buf: ArrayBuffer) => string = 'toHex' in Uint8Array.prototype
+  // @ts-expect-error https://github.com/tc39/proposal-arraybuffer-base64/issues/51
   ? buf => new Uint8Array(buf).toHex()
   : buf => {
     let res = ''
@@ -33,7 +36,7 @@ function encodeRFC3986(str: string) {
   );
 }
 
-export type SignV4Opts = {
+export type SigV4Opts = {
   headers: Record<string, string>
   method: string
   body?: string | undefined
@@ -44,9 +47,9 @@ export type SignV4Opts = {
   secretAccessKey: string
   url: string
 }
-export async function sigV4(opts: SignV4Opts) {
-  const headers = Object.entries(opts.headers)
-    .map(([k, v]) => [k.toLowerCase(), v.replace(/^s+|s+$/g, '').replace(/\s+/g, ' ')] as const)
+export async function sigV4(opts: SigV4Opts) {
+  const headers = Object.keys(opts.headers)
+    .map(k => [k.toLowerCase(), opts.headers[k]!.replace(/^s+|s+$/g, '').replace(/\s+/g, ' ')] as const)
     .sort(([a], [b]) => a.localeCompare(b))
 
   const signedHeaders = headers.map(([k]) => k).join(';')

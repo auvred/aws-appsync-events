@@ -63,10 +63,32 @@ export function apiKeyAuthorizer(apiKey: string): Authorizer {
   })
 }
 
+export function cognitoUserPoolsAuthorizer(jwtIdToken: string): Authorizer {
+  return opts => ({
+    host: opts.httpEndpoint,
+    Authorization: jwtIdToken,
+  })
+}
+
+export function openIdConnectAuthorizer(jwtIdToken: string): Authorizer {
+  return opts => ({
+    host: opts.httpEndpoint,
+    Authorization: jwtIdToken,
+  })
+}
+
+export function lambdaAuthorizer(authorizationToken: string): Authorizer {
+  return opts => ({
+    host: opts.httpEndpoint,
+    Authorization: authorizationToken,
+  })
+}
+
 export function awsIamAuthorizer(config: {
   accessKeyId: string
   secretAccessKey: string
   region: string
+  sessionToken?: string | undefined
 }): Authorizer {
   return async opts => {
     const headers = {
@@ -96,6 +118,7 @@ export function awsIamAuthorizer(config: {
     })
     return {
       ...headers,
+      ...(config.sessionToken != null && { 'X-Amz-Security-Token': config.sessionToken }),
       "x-amz-date": xAmzDate,
       "Authorization": authorization
     }
@@ -424,8 +447,6 @@ export class Client {
       return
     }
 
-    // TODO: think about memory leaks
-    // See https://websockets.spec.whatwg.org/#garbage-collection
     const ws = new this.wsCtor(`wss://${this.realtimeEndpoint}/event/realtime`, [
       'aws-appsync-event-ws',
       `header-${authPayload}`,
@@ -465,7 +486,6 @@ export class Client {
         throw new Error(`[aws-appsync-events bug] unexpected binary data in message: ${event.data}`)
       }
 
-      // TODO: validate incoming data
       const message = JSON.parse(event.data)
 
       switch (this.state.type) {
@@ -481,6 +501,9 @@ export class Client {
           clearTimeout(this.state.timerId)
           switch (message.type) {
             case 'connection_ack':
+              if (typeof message.connectionTimeoutMs !== 'number' || message.connectionTimeoutMs <= 0) {
+                throw new Error(`[aws-appsync-events bug] expected "connection_ack" message to have positive numeric "connectionTimeoutMs" (message: ${JSON.stringify(message)})`)
+              }
               this.state = {
                 type: 'connected',
                 ws,
@@ -510,7 +533,7 @@ export class Client {
             case 'connection_error':
               throw new Error('[aws-appsync-events] connection error' + normalizeErrors(message.errors))
             default:
-              throw new Error(`[aws-appsync-events bug] handshake error: expected "connection_ack" but got ${JSON.stringify(message.type)}`)
+              throw new Error(`[aws-appsync-events bug] handshake error: expected "connection_ack" message but got ${JSON.stringify(message)}`)
           }
           break
         case 'connected':
@@ -519,6 +542,9 @@ export class Client {
               this.state.timeoutTimer.reset()
               break
             case 'subscribe_success': {
+              if (typeof message.id !== 'string') {
+                throw new Error(`[aws-appsync-events bug] expected "subscribe_success" message to have "id" (message: ${JSON.stringify(message)})`)
+              }
               const sub = this.subsById.get(message.id)
               if (sub == null) {
                 throw new Error(`[aws-appsync-events bug] subscribe_success for unknown sub`)
@@ -528,6 +554,9 @@ export class Client {
               break
             }
             case 'subscribe_error': {
+              if (typeof message.id !== 'string') {
+                throw new Error(`[aws-appsync-events bug] expected "subscribe_error" message to have "id" (message: ${JSON.stringify(message)})`)
+              }
               const sub = this.subsById.get(message.id)
               if (sub == null) {
                 throw new Error(`[aws-appsync-events bug] subscribe_error for unknown sub`)
@@ -536,6 +565,12 @@ export class Client {
               break
             }
             case 'data':
+              if (typeof message.id !== 'string') {
+                throw new Error(`[aws-appsync-events bug] expected "data" message to have "id" (message: ${JSON.stringify(message)})`)
+              }
+              if (typeof message.event !== 'string') {
+                throw new Error(`[aws-appsync-events bug] expected "data" message to have "event" (message: ${JSON.stringify(message)})`)
+              }
               this.subsById.get(message.id)?.event(JSON.parse(message.event))
               break
             case 'unsubscribe_success':
@@ -633,36 +668,63 @@ export class Client {
     }
   }
 
-  // TODO: split batches
   publish = async (channel: string, events: unknown[]) => {
-    events = events.map(e => JSON.stringify(e))
-    const response = await fetch(`https://${this.httpEndpoint}/event`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...await this.authorizationHeaders({ type: 'publish', channel, events }),
-      },
-      body: JSON.stringify({
-        channel,
-        events,
-      })
-    })
-    const responseBodyText = await response.text()
-    let res: unknown
-    try {
-      res = JSON.parse(responseBodyText)
-    } catch {
-      throw new Error(`Publish error: ${response.statusText} ${response.status}${responseBodyText}`)
-    }
-    if (typeof res !== 'object' || res == null) {
+    if (events.length === 0) {
       return
     }
-    if ('errors' in res && Array.isArray(res.errors) && res.errors.length > 0) {
-      throw new Error(`Publish error: ${JSON.stringify(res.errors, null, 2)}`)
+    const batches: string[][] = [[]]
+    for (const event of events) {
+      let batch = batches[batches.length - 1]!
+      // AppSync allows batching up to 5 events
+      // https://docs.aws.amazon.com/appsync/latest/eventapi/publish-http.html
+      if (batch.length === 5) {
+        batches.push(batch = [])
+      }
+      batch.push(JSON.stringify(event))
     }
-    if ('failed' in res && Array.isArray(res.failed) && res.failed.length > 0) {
-      throw new Error(`Publish error: ${JSON.stringify(res.failed, null, 2)}`)
-    }
+
+    await Promise.all(
+      batches
+        .map(async batch => {
+          let attempt = 0
+          while (true) {
+            try {
+              const { host: _, ...authHeaders } = await this.authorizationHeaders({ type: 'publish', channel, events: batch })
+              const response = await fetch(`https://${this.httpEndpoint}/event`, {
+                method: 'POST',
+                headers: {
+                  'content-type': 'application/json',
+                  ...authHeaders,
+                },
+                body: JSON.stringify({ channel, events: batch })
+              })
+              const responseBodyText = await response.text()
+              let res: unknown
+              try {
+                res = JSON.parse(responseBodyText)
+              } catch {
+                throw new Error(`Publish error: ${response.statusText} ${response.status}${responseBodyText}`)
+              }
+              if (typeof res !== 'object' || res == null) {
+                return
+              }
+              if ('errors' in res && Array.isArray(res.errors) && res.errors.length > 0) {
+                throw new Error(`Publish error: ${JSON.stringify(res.errors, null, 2)}`)
+              }
+              if ('failed' in res && Array.isArray(res.failed) && res.failed.length > 0) {
+                throw new Error(`Publish error: ${JSON.stringify(res.failed, null, 2)}`)
+              }
+              return
+            } catch (e) {
+              const waitMs = this.retryBehavior(attempt++)
+              if (waitMs === false) {
+                throw e
+              }
+              await new Promise(resolve => setTimeout(resolve, waitMs))
+            }
+          }
+        })
+    )
   }
 
   private authorizationHeaders = async (message: AuthorizerOpts['message']) => {

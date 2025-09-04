@@ -23,6 +23,7 @@
     "lib": [
       "es2016", 
       "dom", // for URL
+      "dom.iterable", // for URLSearchParams iterator
     ],
     "types": [],
   },

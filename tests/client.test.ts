@@ -583,7 +583,7 @@ describe('Client', { timeout: 100 }, () => {
   })
 
   it('should throw a handshake error if a message arrives before connection_ack', async () => {
-    expectUncaughtException('handshake error: expected "connection_ack" but got "subscribe_success"')
+    expectUncaughtException('[aws-appsync-events bug] handshake error: expected "connection_ack" message but got {"type":"subscribe_success","id":"default/foo"}')
 
     const { client, sockets } = newClient()
 
@@ -1797,5 +1797,83 @@ describe('Client', { timeout: 100 }, () => {
       ],
       type: 'connection_error'
     })
+  })
+
+  it('should throw on invalid connectionTimeoutMs', async () => {
+    expectUncaughtException('[aws-appsync-events bug] expected "connection_ack" message to have positive numeric "connectionTimeoutMs" (message: {"type":"connection_ack"})')
+
+    const { client, sockets } = newClient()
+
+    await subscribeWithMocks(client, 'default/foo')
+
+    const socket = sockets.get(0)
+    socket.open()
+    socket.consumeConnectionInit()
+    socket.send({ type: 'connection_ack' })
+  })
+
+  it('should throw on negative connectionTimeoutMs', async () => {
+    expectUncaughtException('[aws-appsync-events bug] expected "connection_ack" message to have positive numeric "connectionTimeoutMs" (message: {"type":"connection_ack","connectionTimeoutMs":-5})')
+
+    const { client, sockets } = newClient()
+
+    await subscribeWithMocks(client, 'default/foo')
+
+    const socket = sockets.get(0)
+    socket.open()
+    socket.consumeConnectionInit()
+    socket.send({ type: 'connection_ack', connectionTimeoutMs: -5 })
+  })
+
+  it('should throw on subscribe_success without id', async () => {
+    expectUncaughtException('[aws-appsync-events bug] expected "subscribe_success" message to have "id" (message: {"type":"subscribe_success"})')
+
+    const { client, sockets } = newClient()
+
+    await subscribeWithMocks(client, 'default/foo')
+
+    const socket = sockets.get(0)
+    socket.openAndHandshake()
+    await socket.consumeSubscribeRequest('default/foo')
+    socket.send({ type: 'subscribe_success' })
+  })
+
+  it('should throw on subscribe_error without id', async () => {
+    expectUncaughtException('[aws-appsync-events bug] expected "subscribe_error" message to have "id" (message: {"type":"subscribe_error"})')
+
+    const { client, sockets } = newClient()
+
+    await subscribeWithMocks(client, 'default/foo')
+
+    const socket = sockets.get(0)
+    socket.openAndHandshake()
+    await socket.consumeSubscribeRequest('default/foo')
+    socket.send({ type: 'subscribe_error' })
+  })
+
+  it('should throw on data without id', async () => {
+    expectUncaughtException('[aws-appsync-events bug] expected "data" message to have "id" (message: {"type":"data","event":"{}"})')
+
+    const { client, sockets } = newClient()
+
+    await subscribeWithMocks(client, 'default/foo')
+
+    const socket = sockets.get(0)
+    socket.openAndHandshake()
+    await socket.consumeSubscribeRequest('default/foo')
+    socket.send({ type: 'data', event: '{}' })
+  })
+
+  it('should throw on data without event', async () => {
+    expectUncaughtException('[aws-appsync-events bug] expected "data" message to have "event" (message: {"type":"data","id":"foo"})')
+
+    const { client, sockets } = newClient()
+
+    await subscribeWithMocks(client, 'default/foo')
+
+    const socket = sockets.get(0)
+    socket.openAndHandshake()
+    await socket.consumeSubscribeRequest('default/foo')
+    socket.send({ type: 'data', id: 'foo' })
   })
 })

@@ -24,6 +24,23 @@ test('api key auth', async () => {
   assert.sameDeepMembers(event.mock.calls, [['foo'], [{ bar: [123] }]])
 })
 
+test('publish batch split', async () => {
+  const client = new Client(API_ENDPOINT, apiKeyAuthorizer(API_KEY))
+
+  const event = vi.fn()
+  const established = vi.fn()
+  client.subscribe('default/foo', { event, established })
+
+  await expect.poll(() => established).toHaveBeenCalledOnce()
+
+  const events = new Array(7).fill(null).map((_, i) => i)
+  await client.publish('default/foo', events)
+
+  await expect.poll(() => event).toHaveBeenCalledTimes(events.length)
+
+  assert.sameDeepMembers(event.mock.calls, events.map(e => [e]))
+})
+
 test('aws iam auth', async () => {
   const client = new Client(API_ENDPOINT, awsIamAuthorizer({
     accessKeyId: ACCESS_KEY_ID,
