@@ -1,13 +1,11 @@
-export { 
-  type ClientOpts, 
+export {
+  type ClientOpts,
   type ClientState,
   type AuthorizerOpts,
   type Authorizer,
   type SubscribeOpts,
-  Client, 
-
+  Client,
   exponentialBackoffRetryBehavior,
-
   apiKeyAuthorizer,
   cognitoUserPoolsAuthorizer,
   openIdConnectAuthorizer,

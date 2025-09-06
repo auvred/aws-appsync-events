@@ -26,12 +26,18 @@ test('api key auth', async () => {
 })
 
 test('invalid api key', async () => {
-  expectUncaughtException('[aws-appsync-events] connection error: UnauthorizedException 401 (You are not authorized to make this call.)')
+  expectUncaughtException(
+    '[aws-appsync-events] connection error: UnauthorizedException 401 (You are not authorized to make this call.)',
+  )
 
   const onStateChanged = vi.fn()
-  const client = new Client(API_ENDPOINT, apiKeyAuthorizer(API_KEY + 'invalid'), {
-    onStateChanged,
-  })
+  const client = new Client(
+    API_ENDPOINT,
+    apiKeyAuthorizer(API_KEY + 'invalid'),
+    {
+      onStateChanged,
+    },
+  )
 
   const established = vi.fn()
   const error = vi.fn()
@@ -43,12 +49,23 @@ test('invalid api key', async () => {
 test('websocket retry', async () => {
   const retry = vi.fn((attempt: number) => attempt < 3 && 10)
   const onStateChanged = vi.fn()
-  const client = new Client('nonexistent123123123121231.appsync-api.eu-central-1.amazonaws.com', apiKeyAuthorizer(API_KEY), { retryBehavior: retry, onStateChanged })
+  const client = new Client(
+    'nonexistent123123123121231.appsync-api.eu-central-1.amazonaws.com',
+    apiKeyAuthorizer(API_KEY),
+    { retryBehavior: retry, onStateChanged },
+  )
 
   client.subscribe('default/foo', { event: () => {} })
 
   await expect.poll(() => onStateChanged).toHaveBeenCalledWith('failed')
-  expect(onStateChanged.mock.calls).toEqual([['connecting'], ['backoff'], ['connecting'], ['backoff'], ['connecting'], ['failed']])
+  expect(onStateChanged.mock.calls).toEqual([
+    ['connecting'],
+    ['backoff'],
+    ['connecting'],
+    ['backoff'],
+    ['connecting'],
+    ['failed'],
+  ])
   expect(retry).toHaveBeenCalledTimes(3)
 })
 
@@ -66,12 +83,19 @@ test('publish batch split', async () => {
 
   await expect.poll(() => event).toHaveBeenCalledTimes(events.length)
 
-  assert.sameDeepMembers(event.mock.calls, events.map(e => [e]))
+  assert.sameDeepMembers(
+    event.mock.calls,
+    events.map(e => [e]),
+  )
 })
 
 test('publish error', async () => {
   const retry = vi.fn((attempt: number) => attempt < 2 && 10)
-  const client = new Client('nonexistent123123123121231.appsync-api.eu-central-1.amazonaws.com', apiKeyAuthorizer(API_KEY), { retryBehavior: retry })
+  const client = new Client(
+    'nonexistent123123123121231.appsync-api.eu-central-1.amazonaws.com',
+    apiKeyAuthorizer(API_KEY),
+    { retryBehavior: retry },
+  )
 
   await expect(async () => {
     await client.publish('default/foo', [123])
@@ -101,11 +125,14 @@ test('custom authorizer', async () => {
 })
 
 test('aws iam auth', async () => {
-  const client = new Client(API_ENDPOINT, awsIamAuthorizer({
-    accessKeyId: ACCESS_KEY_ID,
-    secretAccessKey: SECRET_ACCESS_KEY,
-    region: REGION,
-  }))
+  const client = new Client(
+    API_ENDPOINT,
+    awsIamAuthorizer({
+      accessKeyId: ACCESS_KEY_ID,
+      secretAccessKey: SECRET_ACCESS_KEY,
+      region: REGION,
+    }),
+  )
 
   const event = vi.fn()
   const established = vi.fn()

@@ -1,104 +1,199 @@
-import { expect, describe, test, vi, afterEach, beforeEach, onTestFinished, it } from 'vitest'
+import {
+  expect,
+  describe,
+  test,
+  vi,
+  afterEach,
+  beforeEach,
+  onTestFinished,
+  it,
+} from 'vitest'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { apiKeyAuthorizer, Client, parseEndpoint, ResettableTimer, type ClientOpts, type WebSocketAdapter, type WebSocketAdapterConstructor } from '../src/client.js'
+import {
+  apiKeyAuthorizer,
+  Client,
+  parseEndpoint,
+  ResettableTimer,
+  type ClientOpts,
+  type WebSocketAdapter,
+  type WebSocketAdapterConstructor,
+} from '../src/client.js'
 import * as util from 'node:util'
 import { expectMockCalledWithError, expectUncaughtException } from './utils.js'
 
 function simpleRetryBehavior(maxAttempts: number, delay = 10) {
-  return (attempt: number) => attempt > maxAttempts ? false : delay
+  return (attempt: number) => (attempt > maxAttempts ? false : delay)
 }
 
 describe('parseEndpoint', () => {
   describe('provided', () => {
     test('raw http endpoint', () => {
-      const { http, realtime } = parseEndpoint('example123456789example123.appsync-api.us-east-1.amazonaws.com')
+      const { http, realtime } = parseEndpoint(
+        'example123456789example123.appsync-api.us-east-1.amazonaws.com',
+      )
 
-      expect(http).toBe('example123456789example123.appsync-api.us-east-1.amazonaws.com')
-      expect(realtime).toBe('example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com')
+      expect(http).toBe(
+        'example123456789example123.appsync-api.us-east-1.amazonaws.com',
+      )
+      expect(realtime).toBe(
+        'example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com',
+      )
     })
 
     test('other regions', () => {
-      const { http, realtime } = parseEndpoint('example123456789example123.appsync-api.eu-central-1.amazonaws.com')
+      const { http, realtime } = parseEndpoint(
+        'example123456789example123.appsync-api.eu-central-1.amazonaws.com',
+      )
 
-      expect(http).toBe('example123456789example123.appsync-api.eu-central-1.amazonaws.com')
-      expect(realtime).toBe('example123456789example123.appsync-realtime-api.eu-central-1.amazonaws.com')
+      expect(http).toBe(
+        'example123456789example123.appsync-api.eu-central-1.amazonaws.com',
+      )
+      expect(realtime).toBe(
+        'example123456789example123.appsync-realtime-api.eu-central-1.amazonaws.com',
+      )
     })
 
     test('amazonaws.com.cn', () => {
-      const { http, realtime } = parseEndpoint('example123456789example123.appsync-api.us-east-1.amazonaws.com.cn')
+      const { http, realtime } = parseEndpoint(
+        'example123456789example123.appsync-api.us-east-1.amazonaws.com.cn',
+      )
 
-      expect(http).toBe('example123456789example123.appsync-api.us-east-1.amazonaws.com.cn')
-      expect(realtime).toBe('example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com.cn')
+      expect(http).toBe(
+        'example123456789example123.appsync-api.us-east-1.amazonaws.com.cn',
+      )
+      expect(realtime).toBe(
+        'example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com.cn',
+      )
     })
 
     test('raw realtime endpoint', () => {
-      const { http, realtime } = parseEndpoint('example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com')
+      const { http, realtime } = parseEndpoint(
+        'example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com',
+      )
 
-      expect(http).toBe('example123456789example123.appsync-api.us-east-1.amazonaws.com')
-      expect(realtime).toBe('example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com')
+      expect(http).toBe(
+        'example123456789example123.appsync-api.us-east-1.amazonaws.com',
+      )
+      expect(realtime).toBe(
+        'example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com',
+      )
     })
 
     test('wss:// realtime endpoint', () => {
-      const { http, realtime } = parseEndpoint('wss://example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com')
+      const { http, realtime } = parseEndpoint(
+        'wss://example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com',
+      )
 
-      expect(http).toBe('example123456789example123.appsync-api.us-east-1.amazonaws.com')
-      expect(realtime).toBe('example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com')
+      expect(http).toBe(
+        'example123456789example123.appsync-api.us-east-1.amazonaws.com',
+      )
+      expect(realtime).toBe(
+        'example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com',
+      )
     })
 
     test('ws:// realtime endpoint', () => {
-      const { http, realtime } = parseEndpoint('wss://example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com')
+      const { http, realtime } = parseEndpoint(
+        'wss://example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com',
+      )
 
-      expect(http).toBe('example123456789example123.appsync-api.us-east-1.amazonaws.com')
-      expect(realtime).toBe('example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com')
+      expect(http).toBe(
+        'example123456789example123.appsync-api.us-east-1.amazonaws.com',
+      )
+      expect(realtime).toBe(
+        'example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com',
+      )
     })
 
     test('https:// realtime endpoint', () => {
-      const { http, realtime } = parseEndpoint('https://example123456789example123.appsync-api.us-east-1.amazonaws.com')
+      const { http, realtime } = parseEndpoint(
+        'https://example123456789example123.appsync-api.us-east-1.amazonaws.com',
+      )
 
-      expect(http).toBe('example123456789example123.appsync-api.us-east-1.amazonaws.com')
-      expect(realtime).toBe('example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com')
+      expect(http).toBe(
+        'example123456789example123.appsync-api.us-east-1.amazonaws.com',
+      )
+      expect(realtime).toBe(
+        'example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com',
+      )
     })
 
     test('http:// realtime endpoint', () => {
-      const { http, realtime } = parseEndpoint('http://example123456789example123.appsync-api.us-east-1.amazonaws.com')
+      const { http, realtime } = parseEndpoint(
+        'http://example123456789example123.appsync-api.us-east-1.amazonaws.com',
+      )
 
-      expect(http).toBe('example123456789example123.appsync-api.us-east-1.amazonaws.com')
-      expect(realtime).toBe('example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com')
+      expect(http).toBe(
+        'example123456789example123.appsync-api.us-east-1.amazonaws.com',
+      )
+      expect(realtime).toBe(
+        'example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com',
+      )
     })
 
     test('trailing slash', () => {
-      const { http, realtime } = parseEndpoint('example123456789example123.appsync-api.us-east-1.amazonaws.com/')
+      const { http, realtime } = parseEndpoint(
+        'example123456789example123.appsync-api.us-east-1.amazonaws.com/',
+      )
 
-      expect(http).toBe('example123456789example123.appsync-api.us-east-1.amazonaws.com')
-      expect(realtime).toBe('example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com')
+      expect(http).toBe(
+        'example123456789example123.appsync-api.us-east-1.amazonaws.com',
+      )
+      expect(realtime).toBe(
+        'example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com',
+      )
     })
 
     test('/event', () => {
-      const { http, realtime } = parseEndpoint('example123456789example123.appsync-api.us-east-1.amazonaws.com/event')
+      const { http, realtime } = parseEndpoint(
+        'example123456789example123.appsync-api.us-east-1.amazonaws.com/event',
+      )
 
-      expect(http).toBe('example123456789example123.appsync-api.us-east-1.amazonaws.com')
-      expect(realtime).toBe('example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com')
+      expect(http).toBe(
+        'example123456789example123.appsync-api.us-east-1.amazonaws.com',
+      )
+      expect(realtime).toBe(
+        'example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com',
+      )
     })
 
     test('/event/', () => {
-      const { http, realtime } = parseEndpoint('example123456789example123.appsync-api.us-east-1.amazonaws.com/event/')
+      const { http, realtime } = parseEndpoint(
+        'example123456789example123.appsync-api.us-east-1.amazonaws.com/event/',
+      )
 
-      expect(http).toBe('example123456789example123.appsync-api.us-east-1.amazonaws.com')
-      expect(realtime).toBe('example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com')
+      expect(http).toBe(
+        'example123456789example123.appsync-api.us-east-1.amazonaws.com',
+      )
+      expect(realtime).toBe(
+        'example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com',
+      )
     })
 
     test('/event/realtime', () => {
-      const { http, realtime } = parseEndpoint('example123456789example123.appsync-api.us-east-1.amazonaws.com/event/realtime')
+      const { http, realtime } = parseEndpoint(
+        'example123456789example123.appsync-api.us-east-1.amazonaws.com/event/realtime',
+      )
 
-      expect(http).toBe('example123456789example123.appsync-api.us-east-1.amazonaws.com')
-      expect(realtime).toBe('example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com')
+      expect(http).toBe(
+        'example123456789example123.appsync-api.us-east-1.amazonaws.com',
+      )
+      expect(realtime).toBe(
+        'example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com',
+      )
     })
 
     test('/event/realtime/', () => {
-      const { http, realtime } = parseEndpoint('example123456789example123.appsync-api.us-east-1.amazonaws.com/event/realtime/')
+      const { http, realtime } = parseEndpoint(
+        'example123456789example123.appsync-api.us-east-1.amazonaws.com/event/realtime/',
+      )
 
-      expect(http).toBe('example123456789example123.appsync-api.us-east-1.amazonaws.com')
-      expect(realtime).toBe('example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com')
+      expect(http).toBe(
+        'example123456789example123.appsync-api.us-east-1.amazonaws.com',
+      )
+      expect(realtime).toBe(
+        'example123456789example123.appsync-realtime-api.us-east-1.amazonaws.com',
+      )
     })
   })
 
@@ -199,7 +294,7 @@ describe('ResettableTimer', () => {
     new ResettableTimer(50, timeout)
 
     vi.advanceTimersByTime(75)
-    
+
     expect(timeout).toHaveBeenCalledOnce()
   })
 
@@ -212,7 +307,7 @@ describe('ResettableTimer', () => {
     vi.advanceTimersByTime(25)
     timer.reset()
     vi.advanceTimersByTime(25)
-    
+
     expect(timeout).not.toBeCalled()
   })
 
@@ -237,7 +332,7 @@ describe('ResettableTimer', () => {
     vi.advanceTimersByTime(25)
     timer.cancel()
     vi.advanceTimersByTime(75)
-    
+
     expect(timeout).not.toBeCalled()
   })
 
@@ -248,13 +343,13 @@ describe('ResettableTimer', () => {
     vi.advanceTimersByTime(75)
     timer.cancel()
     vi.advanceTimersByTime(75)
-    
+
     expect(timeout).toHaveBeenCalledOnce()
   })
 })
 
 const tick: PromiseLike<void> = {
-  then: (resolve, reject) => sleep(0).then(resolve, reject)
+  then: (resolve, reject) => sleep(0).then(resolve, reject),
 }
 
 describe('Client', { timeout: 100 }, () => {
@@ -267,9 +362,10 @@ describe('Client', { timeout: 100 }, () => {
     vi.restoreAllMocks()
   })
 
-  type SocketAdapter = Pick<EventTarget, 'dispatchEvent'> & Pick<WebSocketAdapter, 'send' | 'close'> & {
-    readonly incomingMessages: string[]
-  }
+  type SocketAdapter = Pick<EventTarget, 'dispatchEvent'> &
+    Pick<WebSocketAdapter, 'send' | 'close'> & {
+      readonly incomingMessages: string[]
+    }
 
   function subscribeWithMocksSync(client: Client, channel: string) {
     const event = vi.fn()
@@ -282,7 +378,7 @@ describe('Client', { timeout: 100 }, () => {
       sub,
       event,
       established,
-      error
+      error,
     }
   }
   async function subscribeWithMocks(client: Client, channel: string) {
@@ -307,9 +403,11 @@ describe('Client', { timeout: 100 }, () => {
     }
 
     send = (msg: unknown) => {
-      this.adapter.dispatchEvent(new MessageEvent('message', {
-        data: JSON.stringify(msg),
-      }))
+      this.adapter.dispatchEvent(
+        new MessageEvent('message', {
+          data: JSON.stringify(msg),
+        }),
+      )
     }
 
     sendData = (subId: string, data: unknown) => {
@@ -324,7 +422,10 @@ describe('Client', { timeout: 100 }, () => {
       return JSON.parse(message)
     }
 
-    consumeSubscribeRequestSync = (channel: string, authorization: unknown = expect.any(Object)): string => {
+    consumeSubscribeRequestSync = (
+      channel: string,
+      authorization: unknown = expect.any(Object),
+    ): string => {
       const msg = this.consumeMessage()
       expect(msg).toEqual({
         type: 'subscribe',
@@ -374,7 +475,7 @@ describe('Client', { timeout: 100 }, () => {
       expect(this.consumeMessage()).toEqual({ type: 'connection_init' })
     }
 
-    handshake = (connectionTimeoutMs: number | undefined = 30_000 ) => {
+    handshake = (connectionTimeoutMs: number | undefined = 30_000) => {
       this.consumeConnectionInit()
       this.send({ type: 'connection_ack', connectionTimeoutMs })
     }
@@ -392,7 +493,10 @@ describe('Client', { timeout: 100 }, () => {
       readonly incomingMessages: string[] = []
       closed = false
 
-      constructor(readonly url: string, readonly protocols: string[]) {
+      constructor(
+        readonly url: string,
+        readonly protocols: string[],
+      ) {
         super()
         sockets.push(new Socket(this))
       }
@@ -409,7 +513,10 @@ describe('Client', { timeout: 100 }, () => {
 
     onTestFinished(() => {
       for (const [i, socket] of sockets.entries()) {
-        expect(socket.adapter.incomingMessages, `sockets[${i}]: ${util.inspect(socket.adapter.incomingMessages)}`).toHaveLength(0)
+        expect(
+          socket.adapter.incomingMessages,
+          `sockets[${i}]: ${util.inspect(socket.adapter.incomingMessages)}`,
+        ).toHaveLength(0)
       }
     })
 
@@ -421,19 +528,18 @@ describe('Client', { timeout: 100 }, () => {
         get: (idx: number) => {
           expect(sockets).toHaveLength(idx + 1)
           return sockets[idx]!
-        }
-      }
+        },
+      },
     }
   }
 
   test('basic subscribe', async () => {
     const { client, sockets } = newClient()
 
-    const {
-      event, 
-      established,
-      error,
-    } = await subscribeWithMocks(client, 'default/foo')
+    const { event, established, error } = await subscribeWithMocks(
+      client,
+      'default/foo',
+    )
 
     const socket = sockets.get(0)
     socket.openAndHandshake()
@@ -459,7 +565,11 @@ describe('Client', { timeout: 100 }, () => {
   it('should subscribe to a new channel and isolate events', async () => {
     const { client, sockets } = newClient()
 
-    const { event: event1, established: est1, error: err1 } = await subscribeWithMocks(client, 'default/foo')
+    const {
+      event: event1,
+      established: est1,
+      error: err1,
+    } = await subscribeWithMocks(client, 'default/foo')
 
     const socket = sockets.get(0)
     socket.openAndHandshake()
@@ -469,7 +579,11 @@ describe('Client', { timeout: 100 }, () => {
     expect(est1).toHaveBeenCalledOnce()
     expect(err1).not.toBeCalled()
 
-    const { event: event2, established: est2, error: err2 } = await subscribeWithMocks(client, 'default/foo')
+    const {
+      event: event2,
+      established: est2,
+      error: err2,
+    } = await subscribeWithMocks(client, 'default/foo')
 
     expect(est2).not.toBeCalled()
     expect(err2).not.toBeCalled()
@@ -501,7 +615,10 @@ describe('Client', { timeout: 100 }, () => {
     socket1.close()
     expect(client['state'].type).toBe('backoff')
 
-    const { event, established, error } = await subscribeWithMocks(client, 'default/foo')
+    const { event, established, error } = await subscribeWithMocks(
+      client,
+      'default/foo',
+    )
 
     expect(established).not.toBeCalled()
     expect(error).not.toBeCalled()
@@ -567,7 +684,9 @@ describe('Client', { timeout: 100 }, () => {
   })
 
   it('should throw a handshake error if a message arrives before connection_ack', async () => {
-    expectUncaughtException('[aws-appsync-events bug] handshake error: expected "connection_ack" message but got {"type":"subscribe_success","id":"default/foo"}')
+    expectUncaughtException(
+      '[aws-appsync-events bug] handshake error: expected "connection_ack" message but got {"type":"subscribe_success","id":"default/foo"}',
+    )
 
     const onStateChanged = vi.fn()
     const { client, sockets } = newClient({ onStateChanged })
@@ -593,13 +712,17 @@ describe('Client', { timeout: 100 }, () => {
     client.connect()
     await tick
     const socket = sockets.get(0)
-    socket.adapter.dispatchEvent(new MessageEvent('message', {
-      data: new ArrayBuffer(0),
-    }))
+    socket.adapter.dispatchEvent(
+      new MessageEvent('message', {
+        data: new ArrayBuffer(0),
+      }),
+    )
   })
 
   it('should throw unknown error with details when server sends error frame', async () => {
-    expectUncaughtException('[aws-appsync-events] unknown error: UnsupportedOperation (Operation not supported through the realtime channel)')
+    expectUncaughtException(
+      '[aws-appsync-events] unknown error: UnsupportedOperation (Operation not supported through the realtime channel)',
+    )
 
     const { client, sockets } = newClient()
 
@@ -612,9 +735,9 @@ describe('Client', { timeout: 100 }, () => {
       errors: [
         {
           errorType: 'UnsupportedOperation',
-          message: 'Operation not supported through the realtime channel'
-        }
-      ]
+          message: 'Operation not supported through the realtime channel',
+        },
+      ],
     })
   })
 
@@ -630,7 +753,6 @@ describe('Client', { timeout: 100 }, () => {
       type: 'foo',
       bar: 123,
     })
-
   })
 
   it('should throw on message missing a type', async () => {
@@ -644,13 +766,15 @@ describe('Client', { timeout: 100 }, () => {
     socket.send({
       bar: 123,
     })
-
   })
 
   it('should call error with details on subscribe_error', async () => {
     const { client, sockets } = newClient()
 
-    const { established, error } = await subscribeWithMocks(client, 'default/foo')
+    const { established, error } = await subscribeWithMocks(
+      client,
+      'default/foo',
+    )
 
     const socket = sockets.get(0)
     socket.openAndHandshake()
@@ -665,20 +789,26 @@ describe('Client', { timeout: 100 }, () => {
         {
           errorType: 'BadRequestException',
           message: 'Invalid Channel Format',
-        }
+        },
       ],
     })
 
     queueMicrotask(() => {
       expect(established).not.toBeCalled()
-      expectMockCalledWithError(error, 'Subscribe error: UnauthorizedException, BadRequestException (Invalid Channel Format)')
+      expectMockCalledWithError(
+        error,
+        'Subscribe error: UnauthorizedException, BadRequestException (Invalid Channel Format)',
+      )
     })
   })
 
   it('should call error exactly once for a failed subscription and not resubscribe on reconnect', async () => {
     const { client, sockets } = newClient()
 
-    const { established, error } = await subscribeWithMocks(client, 'default/foo')
+    const { established, error } = await subscribeWithMocks(
+      client,
+      'default/foo',
+    )
 
     const socket1 = sockets.get(0)
     socket1.openAndHandshake()
@@ -686,7 +816,7 @@ describe('Client', { timeout: 100 }, () => {
     socket1.send({
       type: 'subscribe_error',
       id: subId,
-      errors: [ { errorType: 'UnauthorizedException' }],
+      errors: [{ errorType: 'UnauthorizedException' }],
     })
 
     queueMicrotask(() => {
@@ -704,7 +834,9 @@ describe('Client', { timeout: 100 }, () => {
   })
 
   it('should throw if subscribe_success references an unknown subscription id', async () => {
-    expectUncaughtException('[aws-appsync-events bug] subscribe_success for unknown sub')
+    expectUncaughtException(
+      '[aws-appsync-events bug] subscribe_success for unknown sub',
+    )
 
     const { client, sockets } = newClient()
 
@@ -716,7 +848,9 @@ describe('Client', { timeout: 100 }, () => {
   })
 
   it('should throw if subscribe_error references an unknown subscription id', async () => {
-    expectUncaughtException('[aws-appsync-events bug] subscribe_error for unknown sub')
+    expectUncaughtException(
+      '[aws-appsync-events bug] subscribe_error for unknown sub',
+    )
 
     const { client, sockets } = newClient()
 
@@ -747,8 +881,11 @@ describe('Client', { timeout: 100 }, () => {
   it('should cancel subscription if unsubscribed while connecting', async () => {
     const { client, sockets } = newClient()
 
-    const { sub, established, error } = await subscribeWithMocks(client, 'default/foo')
-    
+    const { sub, established, error } = await subscribeWithMocks(
+      client,
+      'default/foo',
+    )
+
     expect(client['state'].type).toBe('connecting')
     sub.unsubscribe()
 
@@ -763,7 +900,10 @@ describe('Client', { timeout: 100 }, () => {
   it('should treat double unsubscribe during connecting as idempotent', async () => {
     const { client, sockets } = newClient()
 
-    const { sub, established, error } = await subscribeWithMocks(client, 'default/foo')
+    const { sub, established, error } = await subscribeWithMocks(
+      client,
+      'default/foo',
+    )
 
     expect(client['state'].type).toBe('connecting')
     sub.unsubscribe()
@@ -777,15 +917,17 @@ describe('Client', { timeout: 100 }, () => {
     expect(socket.consumeMessage()).toBeUndefined()
   })
 
-
   it('should cancel pending subscription if unsubscribed during handshaking', async () => {
     const { client, sockets } = newClient()
 
-    const { sub, established, error } = await subscribeWithMocks(client, 'default/foo')
+    const { sub, established, error } = await subscribeWithMocks(
+      client,
+      'default/foo',
+    )
 
     const socket = sockets.get(0)
     socket.open()
-    
+
     expect(client['state'].type).toBe('handshaking')
     sub.unsubscribe()
 
@@ -800,10 +942,19 @@ describe('Client', { timeout: 100 }, () => {
   it('should keep first listener and drop second when second unsubscribes during connecting', async () => {
     const { client, sockets } = newClient()
 
-    const { event: event1, established: est1, error: err1 } = await subscribeWithMocks(client, 'default/foo')
+    const {
+      event: event1,
+      established: est1,
+      error: err1,
+    } = await subscribeWithMocks(client, 'default/foo')
 
-    const { sub: sub2, event: event2, established: est2, error: err2 } = await subscribeWithMocks(client, 'default/foo')
-    
+    const {
+      sub: sub2,
+      event: event2,
+      established: est2,
+      error: err2,
+    } = await subscribeWithMocks(client, 'default/foo')
+
     expect(client['state'].type).toBe('connecting')
     sub2.unsubscribe()
 
@@ -830,7 +981,10 @@ describe('Client', { timeout: 100 }, () => {
   it('should queue unsubscribe issued before ack', async () => {
     const { client, sockets } = newClient()
 
-    const { sub, established, error } = await subscribeWithMocks(client, 'default/foo')
+    const { sub, established, error } = await subscribeWithMocks(
+      client,
+      'default/foo',
+    )
 
     const socket = sockets.get(0)
     socket.openAndHandshake()
@@ -852,7 +1006,10 @@ describe('Client', { timeout: 100 }, () => {
   it('should send unsubscribe for an established subscription when connected', async () => {
     const { client, sockets } = newClient()
 
-    const { sub, established, error } = await subscribeWithMocks(client, 'default/foo')
+    const { sub, established, error } = await subscribeWithMocks(
+      client,
+      'default/foo',
+    )
 
     const socket = sockets.get(0)
     socket.openAndHandshake()
@@ -867,9 +1024,15 @@ describe('Client', { timeout: 100 }, () => {
   })
 
   it('should not emit error when unsubscribing from an established subscription even if the connection later fails', async () => {
-    const { client, sockets } = newClient({ retryBehavior: () => false, idleConnectionKeepAliveTimeMs: 20 })
+    const { client, sockets } = newClient({
+      retryBehavior: () => false,
+      idleConnectionKeepAliveTimeMs: 20,
+    })
 
-    const { sub, established, error } = await subscribeWithMocks(client, 'default/foo')
+    const { sub, established, error } = await subscribeWithMocks(
+      client,
+      'default/foo',
+    )
 
     const socket = sockets.get(0)
     socket.openAndHandshake(10)
@@ -887,7 +1050,10 @@ describe('Client', { timeout: 100 }, () => {
   it('should not resubscribe after unsubscribing during backoff', async () => {
     const { client, sockets } = newClient()
 
-    const { sub, established, error } = await subscribeWithMocks(client, 'default/foo')
+    const { sub, established, error } = await subscribeWithMocks(
+      client,
+      'default/foo',
+    )
 
     const socket1 = sockets.get(0)
     socket1.openAndHandshake()
@@ -912,8 +1078,17 @@ describe('Client', { timeout: 100 }, () => {
   it('should resubscribe with one sub', async () => {
     const { client, sockets } = newClient()
 
-    const { event: event1, established: est1, error: err1 } = await subscribeWithMocks(client, 'default/foo')
-    const { sub: sub2, event: event2, established: est2, error: err2 } = await subscribeWithMocks(client, 'default/foo')
+    const {
+      event: event1,
+      established: est1,
+      error: err1,
+    } = await subscribeWithMocks(client, 'default/foo')
+    const {
+      sub: sub2,
+      event: event2,
+      established: est2,
+      error: err2,
+    } = await subscribeWithMocks(client, 'default/foo')
 
     const socket1 = sockets.get(0)
     socket1.openAndHandshake()
@@ -1002,7 +1177,10 @@ describe('Client', { timeout: 100 }, () => {
     socket.close()
     expect(client['state'].type).toBe('backoff')
 
-    const { sub, established, error } = await subscribeWithMocks(client, 'default/foo')
+    const { sub, established, error } = await subscribeWithMocks(
+      client,
+      'default/foo',
+    )
     expect(client['state'].type).toBe('backoff')
 
     sub.unsubscribe()
@@ -1013,8 +1191,11 @@ describe('Client', { timeout: 100 }, () => {
   it('should ignore events sent after unsubscribe request', async () => {
     const { client, sockets } = newClient()
 
-    const { sub, event, established, error } = await subscribeWithMocks(client, 'default/foo')
-    
+    const { sub, event, established, error } = await subscribeWithMocks(
+      client,
+      'default/foo',
+    )
+
     const socket = sockets.get(0)
     socket.openAndHandshake()
     const subId = await socket.acceptSubscribe('default/foo')
@@ -1034,8 +1215,11 @@ describe('Client', { timeout: 100 }, () => {
   it('should ignore events sent after unsubscribe_success response', async () => {
     const { client, sockets } = newClient()
 
-    const { sub, event, established, error } = await subscribeWithMocks(client, 'default/foo')
-    
+    const { sub, event, established, error } = await subscribeWithMocks(
+      client,
+      'default/foo',
+    )
+
     const socket = sockets.get(0)
     socket.openAndHandshake()
     const subId = await socket.acceptSubscribe('default/foo')
@@ -1053,11 +1237,16 @@ describe('Client', { timeout: 100 }, () => {
   })
 
   it('should throw on unsubscribe_error', async () => {
-    expectUncaughtException('[aws-appsync-events bug] unsubscribe error: UnknownOperationError (Unknown operation id)')
+    expectUncaughtException(
+      '[aws-appsync-events bug] unsubscribe error: UnknownOperationError (Unknown operation id)',
+    )
 
     const { client, sockets } = newClient()
 
-    const { sub, event, established, error } = await subscribeWithMocks(client, 'default/foo')
+    const { sub, event, established, error } = await subscribeWithMocks(
+      client,
+      'default/foo',
+    )
 
     const socket = sockets.get(0)
     socket.openAndHandshake()
@@ -1077,62 +1266,67 @@ describe('Client', { timeout: 100 }, () => {
       errors: [
         {
           errorType: 'UnknownOperationError',
-          message: 'Unknown operation id'
-        }
-      ]
+          message: 'Unknown operation id',
+        },
+      ],
     })
   })
 
-  it.each([false, true])('should retry with exponential backoff on disconnects and eventually fail after max attempts, err - %s', async (errBeforeClose) => {
-    function failSocket(socket: Socket) {
-      if (errBeforeClose) {
-        socket.error()
+  it.each([false, true])(
+    'should retry with exponential backoff on disconnects and eventually fail after max attempts, err - %s',
+    async errBeforeClose => {
+      function failSocket(socket: Socket) {
+        if (errBeforeClose) {
+          socket.error()
+        }
+        socket.close()
       }
-      socket.close()
-    }
-    const { client, sockets } = newClient()
+      const { client, sockets } = newClient()
 
-    await subscribeWithMocks(client, 'default/foo')
-    const socket = sockets.get(0)
+      await subscribeWithMocks(client, 'default/foo')
+      const socket = sockets.get(0)
 
-    expect(client['state'].type).toBe('connecting')
-    failSocket(socket)
+      expect(client['state'].type).toBe('connecting')
+      failSocket(socket)
 
-    expect(client['state']).toMatchObject({ type: 'backoff', attempt: 1 })
-    vi.runAllTimers()
-    await tick
+      expect(client['state']).toMatchObject({ type: 'backoff', attempt: 1 })
+      vi.runAllTimers()
+      await tick
 
-    const socket2 = sockets.get(1)
-    socket2.open()
-    expect(client['state'].type).toBe('handshaking')
-    socket2.consumeConnectionInit()
-    failSocket(socket2)
+      const socket2 = sockets.get(1)
+      socket2.open()
+      expect(client['state'].type).toBe('handshaking')
+      socket2.consumeConnectionInit()
+      failSocket(socket2)
 
-    expect(client['state']).toMatchObject({ type: 'backoff', attempt: 2 })
-    vi.runAllTimers()
-    await tick
+      expect(client['state']).toMatchObject({ type: 'backoff', attempt: 2 })
+      vi.runAllTimers()
+      await tick
 
-    const socket3 = sockets.get(2)
-    socket3.openAndHandshake()
-    expect(client['state'].type).toBe('connected')
-    failSocket(socket3)
+      const socket3 = sockets.get(2)
+      socket3.openAndHandshake()
+      expect(client['state'].type).toBe('connected')
+      failSocket(socket3)
 
-    expect(client['state']).toMatchObject({ type: 'backoff', attempt: 3 })
-    await socket3.consumeSubscribeRequest('default/foo')
-    vi.runAllTimers()
-    await tick
+      expect(client['state']).toMatchObject({ type: 'backoff', attempt: 3 })
+      await socket3.consumeSubscribeRequest('default/foo')
+      vi.runAllTimers()
+      await tick
 
-    const socket4 = sockets.get(3)
-    socket4.openAndHandshake()
-    expect(client['state'].type).toBe('connected')
-    failSocket(socket4)
+      const socket4 = sockets.get(3)
+      socket4.openAndHandshake()
+      expect(client['state'].type).toBe('connected')
+      failSocket(socket4)
 
-    expect(client['state'].type).toBe('failed')
-    await socket4.consumeSubscribeRequest('default/foo')
-  })
+      expect(client['state'].type).toBe('failed')
+      await socket4.consumeSubscribeRequest('default/foo')
+    },
+  )
 
   it('should retry on timeout until max attempts are reached, then transition to failed', async () => {
-    const { client, sockets } = newClient({ retryBehavior: simpleRetryBehavior(1) })
+    const { client, sockets } = newClient({
+      retryBehavior: simpleRetryBehavior(1),
+    })
 
     await subscribeWithMocks(client, 'default/foo')
     const socket1 = sockets.get(0)
@@ -1149,14 +1343,16 @@ describe('Client', { timeout: 100 }, () => {
     socket2.openAndHandshake()
     await socket2.acceptSubscribe('default/foo')
     expect(client['state'].type).toBe('connected')
-    
+
     vi.runAllTimers()
     await tick
     expect(client['state'].type).toBe('failed')
   })
 
   it('should reset keepalive timer on ka messages and fail after timeout expires', async () => {
-    const { client, sockets } = newClient({ retryBehavior: simpleRetryBehavior(0) })
+    const { client, sockets } = newClient({
+      retryBehavior: simpleRetryBehavior(0),
+    })
 
     client.connect()
     await tick
@@ -1176,14 +1372,17 @@ describe('Client', { timeout: 100 }, () => {
   it('should resubscribe active channels after reconnect using the same subscription ids', async () => {
     const { client, sockets } = newClient()
 
-    const { established, error } = await subscribeWithMocks(client, 'default/foo')
+    const { established, error } = await subscribeWithMocks(
+      client,
+      'default/foo',
+    )
     const socket1 = sockets.get(0)
     socket1.openAndHandshake()
     const subId1 = await socket1.acceptSubscribe('default/foo')
 
     expect(established).toHaveBeenCalledOnce()
     expect(error).not.toBeCalled()
-    
+
     socket1.close()
     expect(client['state'].type).toBe('backoff')
 
@@ -1206,7 +1405,7 @@ describe('Client', { timeout: 100 }, () => {
     socket.open()
     expect(onStateChanged.mock.calls).toEqual([['connecting']])
     socket.handshake()
-    
+
     queueMicrotask(() => {
       expect(onStateChanged.mock.calls).toEqual([['connecting'], ['connected']])
     })
@@ -1228,7 +1427,10 @@ describe('Client', { timeout: 100 }, () => {
 
   it('should invoke onStateChanged with failed when retries are disabled and socket closes', async () => {
     const onStateChanged = vi.fn()
-    const { client, sockets } = newClient({ onStateChanged, retryBehavior: () => false })
+    const { client, sockets } = newClient({
+      onStateChanged,
+      retryBehavior: () => false,
+    })
 
     client.connect()
     await tick
@@ -1295,78 +1497,107 @@ describe('Client', { timeout: 100 }, () => {
 
     expect(client['state'].type).toBe('idle')
     queueMicrotask(() => {
-      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['connected'], ['idle']])
+      expect(onStateChanged.mock.calls).toEqual([
+        ['connecting'],
+        ['connected'],
+        ['idle'],
+      ])
     })
   })
 
-  it.for([true, false])('should close idle connection during connecting (immediate %s)', async (immediate) => {
-    const onStateChanged = vi.fn()
-    const { client } = newClient({ onStateChanged, idleConnectionKeepAliveTimeMs: !immediate && 1 })
+  it.for([true, false])(
+    'should close idle connection during connecting (immediate %s)',
+    async immediate => {
+      const onStateChanged = vi.fn()
+      const { client } = newClient({
+        onStateChanged,
+        idleConnectionKeepAliveTimeMs: !immediate && 1,
+      })
 
-    const { sub } = await subscribeWithMocks(client, 'default/foo')
-    expect(client['state'].type).toBe('connecting')
-    sub.unsubscribe()
+      const { sub } = await subscribeWithMocks(client, 'default/foo')
+      expect(client['state'].type).toBe('connecting')
+      sub.unsubscribe()
 
-    if (!immediate) {
-      vi.runAllTimers()
-    }
+      if (!immediate) {
+        vi.runAllTimers()
+      }
 
-    expect(client['state'].type).toBe('idle')
-    queueMicrotask(() => {
-      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['idle']])
-    })
-  })
+      expect(client['state'].type).toBe('idle')
+      queueMicrotask(() => {
+        expect(onStateChanged.mock.calls).toEqual([['connecting'], ['idle']])
+      })
+    },
+  )
 
-  it.for([true, false])('should close idle connection during handshaking (immediate %s)', async (immediate) => {
-    const onStateChanged = vi.fn()
-    const { client, sockets } = newClient({ onStateChanged, idleConnectionKeepAliveTimeMs: !immediate && 1 })
+  it.for([true, false])(
+    'should close idle connection during handshaking (immediate %s)',
+    async immediate => {
+      const onStateChanged = vi.fn()
+      const { client, sockets } = newClient({
+        onStateChanged,
+        idleConnectionKeepAliveTimeMs: !immediate && 1,
+      })
 
-    const { sub } = await subscribeWithMocks(client, 'default/foo')
-    const socket = sockets.get(0)
-    socket.open()
-    socket.consumeConnectionInit()
-    expect(client['state'].type).toBe('handshaking')
-    sub.unsubscribe()
+      const { sub } = await subscribeWithMocks(client, 'default/foo')
+      const socket = sockets.get(0)
+      socket.open()
+      socket.consumeConnectionInit()
+      expect(client['state'].type).toBe('handshaking')
+      sub.unsubscribe()
 
-    if (!immediate) {
-      vi.runAllTimers()
-    }
+      if (!immediate) {
+        vi.runAllTimers()
+      }
 
-    expect(client['state'].type).toBe('idle')
-    queueMicrotask(() => {
-      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['idle']])
-    })
-  })
+      expect(client['state'].type).toBe('idle')
+      queueMicrotask(() => {
+        expect(onStateChanged.mock.calls).toEqual([['connecting'], ['idle']])
+      })
+    },
+  )
 
-  it.for([true, false])('should close idle connection during connected (immediate %s)', async (immediate) => {
-    const onStateChanged = vi.fn()
-    const { client, sockets } = newClient({ onStateChanged, idleConnectionKeepAliveTimeMs: !immediate && 1 })
+  it.for([true, false])(
+    'should close idle connection during connected (immediate %s)',
+    async immediate => {
+      const onStateChanged = vi.fn()
+      const { client, sockets } = newClient({
+        onStateChanged,
+        idleConnectionKeepAliveTimeMs: !immediate && 1,
+      })
 
-    const { sub } = await subscribeWithMocks(client, 'default/foo')
-    const socket = sockets.get(0)
-    socket.openAndHandshake()
+      const { sub } = await subscribeWithMocks(client, 'default/foo')
+      const socket = sockets.get(0)
+      socket.openAndHandshake()
 
-    expect(client['state'].type).toBe('connected')
-    const subId = await socket.acceptSubscribe('default/foo')
-    sub.unsubscribe()
+      expect(client['state'].type).toBe('connected')
+      const subId = await socket.acceptSubscribe('default/foo')
+      sub.unsubscribe()
 
-    if (!immediate) {
-      socket.consumeUnsubscribeRequest(subId)
-      vi.runAllTimers()
-    } else {
-      // we don't expect unsubscribe message, because socket should be just closed
-      expect(socket.consumeMessage()).toBeUndefined()
-    }
+      if (!immediate) {
+        socket.consumeUnsubscribeRequest(subId)
+        vi.runAllTimers()
+      } else {
+        // we don't expect unsubscribe message, because socket should be just closed
+        expect(socket.consumeMessage()).toBeUndefined()
+      }
 
-    expect(client['state'].type).toBe('idle')
+      expect(client['state'].type).toBe('idle')
 
-    queueMicrotask(() => {
-      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['connected'], ['idle']])
-    })
-  })
+      queueMicrotask(() => {
+        expect(onStateChanged.mock.calls).toEqual([
+          ['connecting'],
+          ['connected'],
+          ['idle'],
+        ])
+      })
+    },
+  )
 
   it('should reset idle timer when a new subscription is added before timeout', async () => {
-    const { client, sockets } = newClient({ retryBehavior: () => false, idleConnectionKeepAliveTimeMs: 20 })
+    const { client, sockets } = newClient({
+      retryBehavior: () => false,
+      idleConnectionKeepAliveTimeMs: 20,
+    })
 
     const { sub: sub1 } = await subscribeWithMocks(client, 'default/foo')
     const socket = sockets.get(0)
@@ -1384,7 +1615,9 @@ describe('Client', { timeout: 100 }, () => {
   })
 
   it('should keep alive across connecting->handshaking when a new sub arrives before idle timeout', async () => {
-    const { client, sockets } = newClient({ idleConnectionKeepAliveTimeMs: 20 })
+    const { client, sockets } = newClient({
+      idleConnectionKeepAliveTimeMs: 20,
+    })
 
     const { sub: sub1 } = await subscribeWithMocks(client, 'default/foo')
     const socket = sockets.get(0)
@@ -1405,7 +1638,9 @@ describe('Client', { timeout: 100 }, () => {
   })
 
   it('should keep alive across handshaking->connected when a new sub arrives before idle timeout', async () => {
-    const { client, sockets } = newClient({ idleConnectionKeepAliveTimeMs: 20 })
+    const { client, sockets } = newClient({
+      idleConnectionKeepAliveTimeMs: 20,
+    })
 
     const { sub: sub1 } = await subscribeWithMocks(client, 'default/foo')
     const socket = sockets.get(0)
@@ -1426,7 +1661,9 @@ describe('Client', { timeout: 100 }, () => {
   })
 
   it('should reset previous idle timer when entring connected with 0 subs', async () => {
-    const { client, sockets } = newClient({ idleConnectionKeepAliveTimeMs: 20 })
+    const { client, sockets } = newClient({
+      idleConnectionKeepAliveTimeMs: 20,
+    })
 
     const { sub: sub1 } = await subscribeWithMocks(client, 'default/foo')
     const socket = sockets.get(0)
@@ -1445,7 +1682,10 @@ describe('Client', { timeout: 100 }, () => {
 
   it('should not open a connection when there are no subs and keepalive is disabled', async () => {
     const onStateChanged = vi.fn()
-    const { client } = newClient({ onStateChanged, idleConnectionKeepAliveTimeMs: false })
+    const { client } = newClient({
+      onStateChanged,
+      idleConnectionKeepAliveTimeMs: false,
+    })
 
     client.connect()
     await tick
@@ -1456,40 +1696,59 @@ describe('Client', { timeout: 100 }, () => {
     })
   })
 
-  it.for(['backoff', 'failed'])('should not reopen connection from %s when there are no subs and keepalive is disabled', async (fromState) => {
-    const onStateChanged = vi.fn()
-    const { client, sockets } = newClient({ onStateChanged, retryBehavior: fromState === 'failed' ? () => false : () => 5, idleConnectionKeepAliveTimeMs: false })
+  it.for(['backoff', 'failed'])(
+    'should not reopen connection from %s when there are no subs and keepalive is disabled',
+    async fromState => {
+      const onStateChanged = vi.fn()
+      const { client, sockets } = newClient({
+        onStateChanged,
+        retryBehavior: fromState === 'failed' ? () => false : () => 5,
+        idleConnectionKeepAliveTimeMs: false,
+      })
 
-    const { sub } = await subscribeWithMocks(client, 'default/foo')
-    const socket = sockets.get(0)
-    socket.openAndHandshake()
-    await socket.acceptSubscribe('default/foo')
-    queueMicrotask(() => {
-      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['connected']])
-    })
+      const { sub } = await subscribeWithMocks(client, 'default/foo')
+      const socket = sockets.get(0)
+      socket.openAndHandshake()
+      await socket.acceptSubscribe('default/foo')
+      queueMicrotask(() => {
+        expect(onStateChanged.mock.calls).toEqual([
+          ['connecting'],
+          ['connected'],
+        ])
+      })
 
-    socket.close()
-    expect(client['state'].type).toBe(fromState)
+      socket.close()
+      expect(client['state'].type).toBe(fromState)
 
-    queueMicrotask(() => {
-      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['connected'], [fromState]])
-    })
+      queueMicrotask(() => {
+        expect(onStateChanged.mock.calls).toEqual([
+          ['connecting'],
+          ['connected'],
+          [fromState],
+        ])
+      })
 
-    sub.unsubscribe()
+      sub.unsubscribe()
 
-    if (fromState === 'failed') {
-      client.connect()
-      await tick
-    } else {
-      vi.runAllTimers()
-    }
+      if (fromState === 'failed') {
+        client.connect()
+        await tick
+      } else {
+        vi.runAllTimers()
+      }
 
-    expect(client['state'].type).toBe('idle')
+      expect(client['state'].type).toBe('idle')
 
-    queueMicrotask(() => {
-      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['connected'], [fromState], ['idle']])
-    })
-  })
+      queueMicrotask(() => {
+        expect(onStateChanged.mock.calls).toEqual([
+          ['connecting'],
+          ['connected'],
+          [fromState],
+          ['idle'],
+        ])
+      })
+    },
+  )
 
   it('should allow explicit reconnect during backoff', async () => {
     const { client, sockets } = newClient({ retryBehavior: () => 10 })
@@ -1610,7 +1869,11 @@ describe('Client', { timeout: 100 }, () => {
 
     expect(client['state'].type).toBe('connecting')
     queueMicrotask(() => {
-      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['idle'], ['connecting']])
+      expect(onStateChanged.mock.calls).toEqual([
+        ['connecting'],
+        ['idle'],
+        ['connecting'],
+      ])
     })
     expect(sockets.count()).toBe(1)
   })
@@ -1656,7 +1919,6 @@ describe('Client', { timeout: 100 }, () => {
     socket.openAndHandshake()
     expect(client['state'].type).toBe('connected')
 
-
     queueMicrotask(() => {
       expect(onStateChanged.mock.calls).toEqual([['connecting'], ['connected']])
     })
@@ -1666,20 +1928,26 @@ describe('Client', { timeout: 100 }, () => {
     expect(client['state'].type).toBe('idle')
 
     queueMicrotask(() => {
-      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['connected'], ['idle']])
+      expect(onStateChanged.mock.calls).toEqual([
+        ['connecting'],
+        ['connected'],
+        ['idle'],
+      ])
     })
   })
 
   it('should close manually during backoff, cancel retry, and transition to idle', async () => {
     const onStateChanged = vi.fn()
-    const { client, sockets } = newClient({ onStateChanged, retryBehavior: () => 10 })
+    const { client, sockets } = newClient({
+      onStateChanged,
+      retryBehavior: () => 10,
+    })
 
     client.connect()
     await tick
     const socket = sockets.get(0)
     socket.close()
     expect(client['state'].type).toBe('backoff')
-
 
     queueMicrotask(() => {
       expect(onStateChanged.mock.calls).toEqual([['connecting'], ['backoff']])
@@ -1690,7 +1958,11 @@ describe('Client', { timeout: 100 }, () => {
     expect(client['state'].type).toBe('idle')
 
     queueMicrotask(() => {
-      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['backoff'], ['idle']])
+      expect(onStateChanged.mock.calls).toEqual([
+        ['connecting'],
+        ['backoff'],
+        ['idle'],
+      ])
     })
 
     vi.runAllTimers()
@@ -1698,20 +1970,26 @@ describe('Client', { timeout: 100 }, () => {
     expect(client['state'].type).toBe('idle')
 
     queueMicrotask(() => {
-      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['backoff'], ['idle']])
+      expect(onStateChanged.mock.calls).toEqual([
+        ['connecting'],
+        ['backoff'],
+        ['idle'],
+      ])
     })
   })
 
   it('should ignore manual close during failed state and remain failed', async () => {
     const onStateChanged = vi.fn()
-    const { client, sockets } = newClient({ onStateChanged, retryBehavior: () => false })
+    const { client, sockets } = newClient({
+      onStateChanged,
+      retryBehavior: () => false,
+    })
 
     client.connect()
     await tick
     const socket = sockets.get(0)
     socket.close()
     expect(client['state'].type).toBe('failed')
-
 
     queueMicrotask(() => {
       expect(onStateChanged.mock.calls).toEqual([['connecting'], ['failed']])
@@ -1729,55 +2007,64 @@ describe('Client', { timeout: 100 }, () => {
 
   it('should clear pending unsubs on subscribe_error so disconnect does not crash', async () => {
     const { client, sockets } = newClient()
-  
-    const { error: err1, established: est1 } = await subscribeWithMocks(client, 'default/foo')
+
+    const { error: err1, established: est1 } = await subscribeWithMocks(
+      client,
+      'default/foo',
+    )
     const socket = sockets.get(0)
     socket.openAndHandshake()
     const subId = await socket.consumeSubscribeRequest('default/foo')
-  
-    const { sub: sub2, error: err2 } = await subscribeWithMocks(client, 'default/foo')
+
+    const { sub: sub2, error: err2 } = await subscribeWithMocks(
+      client,
+      'default/foo',
+    )
     await socket.consumeSubscribeRequest('default/foo')
     sub2.unsubscribe()
-  
+
     socket.send({
       type: 'subscribe_error',
       id: subId,
       errors: [{ errorType: 'UnauthorizedException' }],
     })
-  
+
     queueMicrotask(() => {
       expect(est1).not.toBeCalled()
       expect(err1).toHaveBeenCalledTimes(1)
       expect(err2).not.toBeCalled()
     })
-  
+
     socket.close()
     expect(client['state'].type).toBe('backoff')
   })
 
   it('should not crash in connectionEnded when mappings were removed by error callbacks', async () => {
     const { client, sockets } = newClient()
-  
-    const { sub: sub1, error: err1 } = await subscribeWithMocks(client, 'default/foo')
+
+    const { sub: sub1, error: err1 } = await subscribeWithMocks(
+      client,
+      'default/foo',
+    )
     const { sub: sub2 } = await subscribeWithMocks(client, 'default/foo')
-  
+
     const socket = sockets.get(0)
     socket.openAndHandshake()
     const subId = await socket.consumeSubscribeRequest('default/foo')
     await socket.consumeSubscribeRequest('default/foo')
-  
+
     sub2.unsubscribe()
-  
+
     err1.mockImplementation(() => {
       sub1.unsubscribe()
     })
-  
+
     socket.send({
       type: 'subscribe_error',
       id: subId,
       errors: [{ errorType: 'UnauthorizedException' }],
     })
-  
+
     expect(() => socket.close()).not.toThrow()
     expect(client['state'].type).toBe('backoff')
   })
@@ -1829,7 +2116,9 @@ describe('Client', { timeout: 100 }, () => {
   })
 
   it('should throw on connection error', async () => {
-    expectUncaughtException('[aws-appsync-events] connection error: UnauthorizedException 401 (You are not authorized to make this call.), UnauthorizedException 401')
+    expectUncaughtException(
+      '[aws-appsync-events] connection error: UnauthorizedException 401 (You are not authorized to make this call.), UnauthorizedException 401',
+    )
 
     const onStateChanged = vi.fn()
     const { client, sockets } = newClient({ onStateChanged })
@@ -1844,14 +2133,14 @@ describe('Client', { timeout: 100 }, () => {
         {
           errorType: 'UnauthorizedException',
           message: 'You are not authorized to make this call.',
-          errorCode: 401
+          errorCode: 401,
         },
         {
           errorType: 'UnauthorizedException',
-          errorCode: 401
+          errorCode: 401,
         },
       ],
-      type: 'connection_error'
+      type: 'connection_error',
     })
 
     expect(client['state'].type).toBe('failed')
@@ -1862,7 +2151,9 @@ describe('Client', { timeout: 100 }, () => {
   })
 
   it('should throw on invalid connectionTimeoutMs', async () => {
-    expectUncaughtException('[aws-appsync-events bug] expected "connection_ack" message to have positive numeric "connectionTimeoutMs" (message: {"type":"connection_ack"})')
+    expectUncaughtException(
+      '[aws-appsync-events bug] expected "connection_ack" message to have positive numeric "connectionTimeoutMs" (message: {"type":"connection_ack"})',
+    )
 
     const onStateChanged = vi.fn()
     const { client, sockets } = newClient({ onStateChanged })
@@ -1882,7 +2173,9 @@ describe('Client', { timeout: 100 }, () => {
   })
 
   it('should throw on negative connectionTimeoutMs', async () => {
-    expectUncaughtException('[aws-appsync-events bug] expected "connection_ack" message to have positive numeric "connectionTimeoutMs" (message: {"type":"connection_ack","connectionTimeoutMs":-5})')
+    expectUncaughtException(
+      '[aws-appsync-events bug] expected "connection_ack" message to have positive numeric "connectionTimeoutMs" (message: {"type":"connection_ack","connectionTimeoutMs":-5})',
+    )
 
     const onStateChanged = vi.fn()
     const { client, sockets } = newClient({ onStateChanged })
@@ -1902,7 +2195,9 @@ describe('Client', { timeout: 100 }, () => {
   })
 
   it('should throw on subscribe_success without id', async () => {
-    expectUncaughtException('[aws-appsync-events bug] expected "subscribe_success" message to have "id" (message: {"type":"subscribe_success"})')
+    expectUncaughtException(
+      '[aws-appsync-events bug] expected "subscribe_success" message to have "id" (message: {"type":"subscribe_success"})',
+    )
 
     const { client, sockets } = newClient()
 
@@ -1915,7 +2210,9 @@ describe('Client', { timeout: 100 }, () => {
   })
 
   it('should throw on subscribe_error without id', async () => {
-    expectUncaughtException('[aws-appsync-events bug] expected "subscribe_error" message to have "id" (message: {"type":"subscribe_error"})')
+    expectUncaughtException(
+      '[aws-appsync-events bug] expected "subscribe_error" message to have "id" (message: {"type":"subscribe_error"})',
+    )
 
     const { client, sockets } = newClient()
 
@@ -1928,7 +2225,9 @@ describe('Client', { timeout: 100 }, () => {
   })
 
   it('should throw on data without id', async () => {
-    expectUncaughtException('[aws-appsync-events bug] expected "data" message to have "id" (message: {"type":"data","event":"{}"})')
+    expectUncaughtException(
+      '[aws-appsync-events bug] expected "data" message to have "id" (message: {"type":"data","event":"{}"})',
+    )
 
     const { client, sockets } = newClient()
 
@@ -1941,7 +2240,9 @@ describe('Client', { timeout: 100 }, () => {
   })
 
   it('should throw on data without event', async () => {
-    expectUncaughtException('[aws-appsync-events bug] expected "data" message to have "event" (message: {"type":"data","id":"foo"})')
+    expectUncaughtException(
+      '[aws-appsync-events bug] expected "data" message to have "event" (message: {"type":"data","id":"foo"})',
+    )
 
     const { client, sockets } = newClient()
 
@@ -1963,7 +2264,7 @@ describe('Client', { timeout: 100 }, () => {
     socket.openAndHandshake()
 
     await tick
-    socket.consumeSubscribeRequestSync('default/foo', { 
+    socket.consumeSubscribeRequestSync('default/foo', {
       host: client.httpEndpoint,
       'x-api-key': 'bar',
     })
@@ -1974,13 +2275,16 @@ describe('Client', { timeout: 100 }, () => {
       defaultSubscribeAuthorizer: apiKeyAuthorizer('bar'),
     })
 
-    client.subscribe('default/foo', { event: () => {}, authorizer: apiKeyAuthorizer('baz') })
+    client.subscribe('default/foo', {
+      event: () => {},
+      authorizer: apiKeyAuthorizer('baz'),
+    })
     await tick
     const socket = sockets.get(0)
     socket.openAndHandshake()
 
     await tick
-    socket.consumeSubscribeRequestSync('default/foo', { 
+    socket.consumeSubscribeRequestSync('default/foo', {
       host: client.httpEndpoint,
       'x-api-key': 'baz',
     })
