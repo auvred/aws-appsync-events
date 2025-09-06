@@ -1,16 +1,39 @@
 {
   "name": "aws-appsync-events",
   "type": "module",
+  "version": "0.0.1",
+  "main": "dist/index.js",
+  "license": "MIT",
+  "description": "A lightweight client for AWS AppSync Events",
+  "keyword": [
+    "aws",
+    "aws-appsync",
+    "appsync-events"
+  ],
+  "author": "auvred <aauvred@gmail.com>",
+  "homepage": "https://github.com/auvred/aws-appsync-events#readme",
+  "bugs": "https://github.com/auvred/aws-appsync-events/issues",
+  "repository": "github:auvred/aws-appsync-events",
+  "files": [
+    "dist/"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "sideEffects": false,
   "scripts": {
     "build": "tsdown",
+    "format": "prettier -w .",
+    "format:check": "prettier --check .",
     "test": "vitest --exclude tests/e2e.test.ts",
-    "test:e2e": "vitest e2e.test.ts",
+    "test:e2e": "vitest tests/e2e.test.ts",
     "type-check": "tsc --noEmit --project ./tsconfig.json && tsc --noEmit --project ./tsconfig.build.json"
   },
   "devDependencies": {
     "@arethetypeswrong/core": "^0.18.2",
     "@types/node": "^24.3.0",
     "@vitest/coverage-v8": "3.2.4",
+    "prettier": "^3.6.2",
     "tsdown": "^0.14.2",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"

@@ -57,7 +57,10 @@ export type SigV4Opts = {
   secretAccessKey: string
   url: string
 }
-export async function sigV4(opts: SigV4Opts) {
+export async function sigV4(opts: SigV4Opts): Promise<{
+  xAmzDate: string
+  authorization: string
+}> {
   const headers = Object.keys(opts.headers)
     .map(
       k =>

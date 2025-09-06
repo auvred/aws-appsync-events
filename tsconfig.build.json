@@ -14,18 +14,17 @@
 
     "noEmit": true,
     "skipLibCheck": true,
-    // TODO: enable
-    // "isolatedDeclarations": true,
+    "isolatedDeclarations": true,
+    "declaration": true,
 
     "module": "node16",
     "verbatimModuleSyntax": true,
     "target": "es2016",
     "lib": [
-      "es2016", 
+      "es2016",
       "dom", // for URL
-      "dom.iterable", // for URLSearchParams iterator
+      "dom.iterable" // for URLSearchParams iterator
     ],
-    "types": [],
-  },
+    "types": []
+  }
 }
-

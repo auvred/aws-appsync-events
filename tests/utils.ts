@@ -4,13 +4,13 @@ import { setTimeout as sleep } from 'node:timers/promises'
 export function expectMockCalledWithError(
   mock: ReturnType<typeof vi.fn>,
   msg: string,
-) {
+): void {
   expect(mock).toHaveBeenCalledOnce()
   const err = mock.mock.lastCall![0]
   expect(err).toBeInstanceOf(Error)
   expect((err as Error).message).toMatch(msg)
 }
-export function expectUncaughtException(msg: string) {
+export function expectUncaughtException(msg: string): void {
   const onUncaughtException = vi.fn()
   process.once('uncaughtException', onUncaughtException)
   onTestFinished(async () => {

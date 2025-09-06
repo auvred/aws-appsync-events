@@ -280,7 +280,7 @@ export class ResettableTimer {
 const randomId =
   crypto.randomUUID?.bind(crypto) ??
   (() =>
-   // https://stackoverflow.com/a/2117523
+    // https://stackoverflow.com/a/2117523
     '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, c =>
       (
         +c ^
@@ -458,7 +458,7 @@ export class Client {
     let unsubscribed = false
 
     return {
-      unsubscribe: () => {
+      unsubscribe: (): void => {
         if (unsubscribed) {
           return
         }
@@ -809,7 +809,7 @@ export class Client {
     }
   }
 
-  close = () => {
+  close = (): void => {
     switch (this.state.type) {
       // 'idle', 'failed' - leave it as is
       case 'backoff':
@@ -839,7 +839,7 @@ export class Client {
     channel: string,
     events: unknown[],
     options: PublishOpts | undefined = {},
-  ) => {
+  ): Promise<void> => {
     if (events.length === 0) {
       return
     }
