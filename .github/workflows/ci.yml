@@ -29,4 +29,4 @@ jobs:
         with:
           node-version: 24.7.0
       - run: pnpm install --frozen-lockfile
-      - run: pnpm format-check
+      - run: pnpm format:check
