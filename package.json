@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "license": "MIT",
   "description": "A lightweight client for AWS AppSync Events",
-  "keyword": [
+  "keywords": [
     "aws",
     "aws-appsync",
     "appsync-events"
