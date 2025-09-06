@@ -293,6 +293,12 @@ To deploy infrastructure required for e2e tests, run:
 ```shell
 terraform init
 terraform apply
+
+# Put required environment variables to .env
+terraform output -json | jq 'to_entries[] | (("vite_appsync_" +  .key) | ascii_upcase) + "=" + .value.value' -r > .env
+
+# Don't forget to clean up resources after you finish testing
+terraform destroy
 ```
 
 Now you can run the tests:
