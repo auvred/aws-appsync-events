@@ -135,7 +135,7 @@ type Sub = {
   authorizer: Authorizer
 }
 
-export type ClientState = 'idle' | 'connected' | 'backoff' | 'failed'
+export type ClientState = 'idle' | 'connecting' | 'connected' | 'backoff' | 'failed'
 export type ClientOpts = {
   /**
    * Function that determines the delay between retry attempts.
@@ -215,9 +215,7 @@ export type PublishOpts = {
 
 // https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
 export function exponentialBackoffRetryBehavior(maxAttempts: number): (attempt: number) => number | false {
-  return attempt => attempt > maxAttempts
-    ? false
-    : Math.min(Math.random() * (2 ** attempt), 20) * 1_000
+  return attempt => attempt <= maxAttempts && Math.min(Math.random() * (2 ** attempt), 20) * 1_000
 }
 
 export class ResettableTimer {
@@ -345,7 +343,7 @@ export class Client {
     this.httpEndpoint = endpoints.http
     this.realtimeEndpoint = endpoints.realtime
     this.retryBehavior = retryBehavior
-    this.onStateChanged = onStateChanged ?? null
+    this.onStateChanged = onStateChanged != null ? (s) => queueMicrotask(() => onStateChanged(s)) : null
     this.idleConnectionKeepAliveTimeMs = idleConnectionKeepAliveTimeMs
     this.defaultSubscribeAuthorizer = defaultSubscribeAuthorizer
     this.defaultPublishAuthorizer = defaultPublishAuthorizer
@@ -468,6 +466,7 @@ export class Client {
     }
 
     this.state = { type: 'auth-preparing' }
+    this.onStateChanged?.('connecting')
 
     const authPayload = btoa(JSON.stringify(await this.authorizationHeaders({ type: 'connect' }, this.connectionAuthorizer)))
       .replace(/\+/g, '-')
@@ -537,6 +536,7 @@ export class Client {
           switch (message.type) {
             case 'connection_ack':
               if (typeof message.connectionTimeoutMs !== 'number' || message.connectionTimeoutMs <= 0) {
+                this.fail()
                 throw new Error(`[aws-appsync-events bug] expected "connection_ack" message to have positive numeric "connectionTimeoutMs" (message: ${JSON.stringify(message)})`)
               }
               this.state = {
@@ -555,6 +555,7 @@ export class Client {
                 // - if connect was called implicitly (via subscribe), idleConnectionKeepAliveTimeMs === false
                 // situation is already handled (because the current state is 'handshaking')
                 if (this.idleConnectionKeepAliveTimeMs === false) {
+                  this.fail()
                   throw new Error('[aws-appsync-events bug] expected idle connection keep alive to be enabled')
                 }
                 clearTimeout(this.state.idleTimerId)
@@ -566,8 +567,10 @@ export class Client {
               this.onStateChanged?.('connected')
               break
             case 'connection_error':
+              this.fail()
               throw new Error('[aws-appsync-events] connection error' + normalizeErrors(message.errors))
             default:
+              this.fail()
               throw new Error(`[aws-appsync-events bug] handshake error: expected "connection_ack" message but got ${JSON.stringify(message)}`)
           }
           break
@@ -642,25 +645,22 @@ export class Client {
           }
           this.pendingUnsubIds.clear()
           if (graceful) {
-            if (this.state.type === 'connected') {
-              this.onStateChanged?.('idle')
-            }
             this.state = { type: 'idle' }
+            this.onStateChanged?.('idle')
             break
           }
           const newAttempt = attempt + 1
           const msToSleep = this.retryBehavior(newAttempt)
           if (msToSleep === false) {
-            this.state = { type: 'failed' }
-            this.onStateChanged?.('failed')
+            this.fail()
             break
           }
+          this.onStateChanged?.('backoff')
           this.state = {
             type: 'backoff',
             attempt: newAttempt,
             timerId: setTimeout(this.connect, msToSleep),
           }
-          this.onStateChanged?.('backoff')
           break
         }
       }
@@ -688,18 +688,16 @@ export class Client {
   close = () => {
     switch (this.state.type) {
       // 'idle', 'failed' - leave it as is
+      case 'backoff':
+        clearTimeout(this.state.timerId)
       case 'auth-preparing':
         this.state = { type: 'idle' }
+        this.onStateChanged?.('idle')
         break
       case 'connecting':
       case 'handshaking':
       case 'connected':
         this.state.closeWs()
-        break
-      case 'backoff':
-        clearTimeout(this.state.timerId)
-        this.state = { type: 'idle' }
-        this.onStateChanged?.('idle')
     }
   }
 
@@ -725,10 +723,11 @@ export class Client {
       batches
         .map(async batch => {
           let attempt = 0
+          let response: Response
           while (true) {
             try {
               const { host: _, ...authHeaders } = await this.authorizationHeaders({ type: 'publish', channel, events: batch }, authorizer)
-              const response = await fetch(`https://${this.httpEndpoint}/event`, {
+              response = await fetch(`https://${this.httpEndpoint}/event`, {
                 method: 'POST',
                 headers: {
                   'content-type': 'application/json',
@@ -736,30 +735,30 @@ export class Client {
                 },
                 body: JSON.stringify({ channel, events: batch })
               })
-              const responseBodyText = await response.text()
-              let res: unknown
-              try {
-                res = JSON.parse(responseBodyText)
-              } catch {
-                throw new Error(`Publish error: ${response.statusText} ${response.status}${responseBodyText}`)
-              }
-              if (typeof res !== 'object' || res == null) {
-                return
-              }
-              if ('errors' in res && Array.isArray(res.errors) && res.errors.length > 0) {
-                throw new Error(`Publish error: ${JSON.stringify(res.errors, null, 2)}`)
-              }
-              if ('failed' in res && Array.isArray(res.failed) && res.failed.length > 0) {
-                throw new Error(`Publish error: ${JSON.stringify(res.failed, null, 2)}`)
-              }
-              return
+              break
             } catch (e) {
-              const waitMs = this.retryBehavior(attempt++)
+              const waitMs = this.retryBehavior(++attempt)
               if (waitMs === false) {
                 throw e
               }
               await new Promise(resolve => setTimeout(resolve, waitMs))
             }
+          }
+          const responseBodyText = await response.text()
+          let res: unknown
+          try {
+            res = JSON.parse(responseBodyText)
+          } catch {
+            throw new Error(`Publish error: ${response.statusText} ${response.status}${responseBodyText}`)
+          }
+          if (typeof res !== 'object' || res == null) {
+            return
+          }
+          if ('errors' in res && Array.isArray(res.errors) && res.errors.length > 0) {
+            throw new Error(`Publish error: ${JSON.stringify(res.errors, null, 2)}`)
+          }
+          if ('failed' in res && Array.isArray(res.failed) && res.failed.length > 0) {
+            throw new Error(`Publish error: ${JSON.stringify(res.failed, null, 2)}`)
           }
         })
     )
@@ -782,4 +781,9 @@ export class Client {
       channel,
     }, authorizer),
   }))
+
+  private fail = () => {
+    this.state = { type: 'failed' }
+    this.onStateChanged?.('failed')
+  }
 }

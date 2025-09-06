@@ -2,26 +2,10 @@ import { expect, describe, test, vi, afterEach, beforeEach, onTestFinished, it }
 import { setTimeout as sleep } from 'node:timers/promises'
 import { apiKeyAuthorizer, Client, parseEndpoint, ResettableTimer, type ClientOpts, type WebSocketAdapter, type WebSocketAdapterConstructor } from '../src/client.js'
 import * as util from 'node:util'
+import { expectMockCalledWithError, expectUncaughtException } from './utils.js'
 
 function simpleRetryBehavior(maxAttempts: number, delay = 10) {
   return (attempt: number) => attempt > maxAttempts ? false : delay
-}
-
-function expectMockCalledWithError(mock: ReturnType<typeof vi.fn>, msg: string) {
-  expect(mock).toHaveBeenCalledOnce()
-  const err = mock.mock.lastCall![0] 
-  expect(err).toBeInstanceOf(Error)
-  expect((err as Error).message).toMatch(msg)
-}
-function expectUncaughtException(msg: string) {
-  const onUncaughtException = vi.fn()
-  process.once('uncaughtException', onUncaughtException)
-  onTestFinished(async () => {
-    await sleep(0)
-    process.removeListener('uncaughtException', onUncaughtException)
-
-    expectMockCalledWithError(onUncaughtException, msg)
-  })
 }
 
 describe('parseEndpoint', () => {
@@ -585,7 +569,8 @@ describe('Client', { timeout: 100 }, () => {
   it('should throw a handshake error if a message arrives before connection_ack', async () => {
     expectUncaughtException('[aws-appsync-events bug] handshake error: expected "connection_ack" message but got {"type":"subscribe_success","id":"default/foo"}')
 
-    const { client, sockets } = newClient()
+    const onStateChanged = vi.fn()
+    const { client, sockets } = newClient({ onStateChanged })
 
     client.connect()
     await tick
@@ -594,6 +579,11 @@ describe('Client', { timeout: 100 }, () => {
     socket.consumeConnectionInit()
     expect(client['state'].type).toBe('handshaking')
     socket.subscribeSuccess('default/foo')
+
+    expect(client['state'].type).toBe('failed')
+    queueMicrotask(() => {
+      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['failed']])
+    })
   })
 
   it('should throw on unexpected binary WebSocket message', async () => {
@@ -610,6 +600,7 @@ describe('Client', { timeout: 100 }, () => {
 
   it('should throw unknown error with details when server sends error frame', async () => {
     expectUncaughtException('[aws-appsync-events] unknown error: UnsupportedOperation (Operation not supported through the realtime channel)')
+
     const { client, sockets } = newClient()
 
     client.connect()
@@ -714,6 +705,7 @@ describe('Client', { timeout: 100 }, () => {
 
   it('should throw if subscribe_success references an unknown subscription id', async () => {
     expectUncaughtException('[aws-appsync-events bug] subscribe_success for unknown sub')
+
     const { client, sockets } = newClient()
 
     client.connect()
@@ -725,6 +717,7 @@ describe('Client', { timeout: 100 }, () => {
 
   it('should throw if subscribe_error references an unknown subscription id', async () => {
     expectUncaughtException('[aws-appsync-events bug] subscribe_error for unknown sub')
+
     const { client, sockets } = newClient()
 
     client.connect()
@@ -1061,6 +1054,7 @@ describe('Client', { timeout: 100 }, () => {
 
   it('should throw on unsubscribe_error', async () => {
     expectUncaughtException('[aws-appsync-events bug] unsubscribe error: UnknownOperationError (Unknown operation id)')
+
     const { client, sockets } = newClient()
 
     const { sub, event, established, error } = await subscribeWithMocks(client, 'default/foo')
@@ -1210,9 +1204,12 @@ describe('Client', { timeout: 100 }, () => {
     await tick
     const socket = sockets.get(0)
     socket.open()
-    expect(onStateChanged).not.toBeCalled()
+    expect(onStateChanged.mock.calls).toEqual([['connecting']])
     socket.handshake()
-    expect(onStateChanged).toHaveBeenCalledExactlyOnceWith('connected')
+    
+    queueMicrotask(() => {
+      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['connected']])
+    })
   })
 
   it('should invoke onStateChanged with backoff after socket closes and retry starts', async () => {
@@ -1223,7 +1220,10 @@ describe('Client', { timeout: 100 }, () => {
     await tick
     const socket = sockets.get(0)
     socket.close()
-    expect(onStateChanged).toHaveBeenCalledExactlyOnceWith('backoff')
+
+    queueMicrotask(() => {
+      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['backoff']])
+    })
   })
 
   it('should invoke onStateChanged with failed when retries are disabled and socket closes', async () => {
@@ -1234,7 +1234,10 @@ describe('Client', { timeout: 100 }, () => {
     await tick
     const socket = sockets.get(0)
     socket.close()
-    expect(onStateChanged).toHaveBeenCalledExactlyOnceWith('failed')
+
+    queueMicrotask(() => {
+      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['failed']])
+    })
   })
 
   it('should call established again when subscription is re-established after reconnect', async () => {
@@ -1286,13 +1289,14 @@ describe('Client', { timeout: 100 }, () => {
     await tick
     const socket = sockets.get(0)
     socket.openAndHandshake()
-    onStateChanged.mockClear()
 
     vi.runAllTimers()
     await tick
 
     expect(client['state'].type).toBe('idle')
-    expect(onStateChanged).toHaveBeenCalledExactlyOnceWith('idle')
+    queueMicrotask(() => {
+      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['connected'], ['idle']])
+    })
   })
 
   it.for([true, false])('should close idle connection during connecting (immediate %s)', async (immediate) => {
@@ -1308,7 +1312,9 @@ describe('Client', { timeout: 100 }, () => {
     }
 
     expect(client['state'].type).toBe('idle')
-    expect(onStateChanged).not.toBeCalled()
+    queueMicrotask(() => {
+      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['idle']])
+    })
   })
 
   it.for([true, false])('should close idle connection during handshaking (immediate %s)', async (immediate) => {
@@ -1327,7 +1333,9 @@ describe('Client', { timeout: 100 }, () => {
     }
 
     expect(client['state'].type).toBe('idle')
-    expect(onStateChanged).not.toBeCalled()
+    queueMicrotask(() => {
+      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['idle']])
+    })
   })
 
   it.for([true, false])('should close idle connection during connected (immediate %s)', async (immediate) => {
@@ -1337,7 +1345,6 @@ describe('Client', { timeout: 100 }, () => {
     const { sub } = await subscribeWithMocks(client, 'default/foo')
     const socket = sockets.get(0)
     socket.openAndHandshake()
-    onStateChanged.mockClear()
 
     expect(client['state'].type).toBe('connected')
     const subId = await socket.acceptSubscribe('default/foo')
@@ -1352,7 +1359,10 @@ describe('Client', { timeout: 100 }, () => {
     }
 
     expect(client['state'].type).toBe('idle')
-    expect(onStateChanged).toHaveBeenCalledExactlyOnceWith('idle')
+
+    queueMicrotask(() => {
+      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['connected'], ['idle']])
+    })
   })
 
   it('should reset idle timer when a new subscription is added before timeout', async () => {
@@ -1440,7 +1450,10 @@ describe('Client', { timeout: 100 }, () => {
     client.connect()
     await tick
     expect(client['state'].type).toBe('idle')
-    expect(onStateChanged).not.toBeCalled()
+
+    queueMicrotask(() => {
+      expect(onStateChanged).not.toBeCalled()
+    })
   })
 
   it.for(['backoff', 'failed'])('should not reopen connection from %s when there are no subs and keepalive is disabled', async (fromState) => {
@@ -1451,13 +1464,16 @@ describe('Client', { timeout: 100 }, () => {
     const socket = sockets.get(0)
     socket.openAndHandshake()
     await socket.acceptSubscribe('default/foo')
-    expect(onStateChanged).toHaveBeenCalledExactlyOnceWith('connected')
-    onStateChanged.mockClear()
+    queueMicrotask(() => {
+      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['connected']])
+    })
 
     socket.close()
     expect(client['state'].type).toBe(fromState)
-    expect(onStateChanged).toHaveBeenCalledExactlyOnceWith(fromState)
-    onStateChanged.mockClear()
+
+    queueMicrotask(() => {
+      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['connected'], [fromState]])
+    })
 
     sub.unsubscribe()
 
@@ -1469,7 +1485,10 @@ describe('Client', { timeout: 100 }, () => {
     }
 
     expect(client['state'].type).toBe('idle')
-    expect(onStateChanged).toHaveBeenCalledExactlyOnceWith('idle')
+
+    queueMicrotask(() => {
+      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['connected'], [fromState], ['idle']])
+    })
   })
 
   it('should allow explicit reconnect during backoff', async () => {
@@ -1555,7 +1574,9 @@ describe('Client', { timeout: 100 }, () => {
     client.close()
 
     expect(client['state'].type).toBe('idle')
-    expect(onStateChanged).not.toBeCalled()
+    queueMicrotask(() => {
+      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['idle']])
+    })
   })
 
   it('should abandon auth-preparing if closed', async () => {
@@ -1568,7 +1589,9 @@ describe('Client', { timeout: 100 }, () => {
     await tick
 
     expect(client['state'].type).toBe('idle')
-    expect(onStateChanged).not.toBeCalled()
+    queueMicrotask(() => {
+      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['idle']])
+    })
   })
 
   it('should abandon auth-preparing if closed and reopened', async () => {
@@ -1586,7 +1609,9 @@ describe('Client', { timeout: 100 }, () => {
     await tick
 
     expect(client['state'].type).toBe('connecting')
-    expect(onStateChanged).not.toBeCalled()
+    queueMicrotask(() => {
+      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['idle'], ['connecting']])
+    })
     expect(sockets.count()).toBe(1)
   })
 
@@ -1599,7 +1624,9 @@ describe('Client', { timeout: 100 }, () => {
     expect(client['state'].type).toBe('connecting')
     client.close()
     expect(client['state'].type).toBe('idle')
-    expect(onStateChanged).not.toBeCalled()
+    queueMicrotask(() => {
+      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['idle']])
+    })
   })
 
   it('should close manually during handshaking and transition to idle', async () => {
@@ -1614,7 +1641,9 @@ describe('Client', { timeout: 100 }, () => {
     expect(client['state'].type).toBe('handshaking')
     client.close()
     expect(client['state'].type).toBe('idle')
-    expect(onStateChanged).not.toBeCalled()
+    queueMicrotask(() => {
+      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['idle']])
+    })
   })
 
   it('should close manually during connected and transition to idle', async () => {
@@ -1627,13 +1656,18 @@ describe('Client', { timeout: 100 }, () => {
     socket.openAndHandshake()
     expect(client['state'].type).toBe('connected')
 
-    expect(onStateChanged).toHaveBeenCalledExactlyOnceWith('connected')
-    onStateChanged.mockClear()
+
+    queueMicrotask(() => {
+      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['connected']])
+    })
 
     client.close()
 
     expect(client['state'].type).toBe('idle')
-    expect(onStateChanged).toHaveBeenCalledExactlyOnceWith('idle')
+
+    queueMicrotask(() => {
+      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['connected'], ['idle']])
+    })
   })
 
   it('should close manually during backoff, cancel retry, and transition to idle', async () => {
@@ -1646,18 +1680,26 @@ describe('Client', { timeout: 100 }, () => {
     socket.close()
     expect(client['state'].type).toBe('backoff')
 
-    expect(onStateChanged).toHaveBeenCalledExactlyOnceWith('backoff')
-    onStateChanged.mockClear()
+
+    queueMicrotask(() => {
+      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['backoff']])
+    })
 
     client.close()
 
     expect(client['state'].type).toBe('idle')
-    expect(onStateChanged).toHaveBeenCalledExactlyOnceWith('idle')
+
+    queueMicrotask(() => {
+      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['backoff'], ['idle']])
+    })
 
     vi.runAllTimers()
 
     expect(client['state'].type).toBe('idle')
-    expect(onStateChanged).toHaveBeenCalledExactlyOnceWith('idle')
+
+    queueMicrotask(() => {
+      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['backoff'], ['idle']])
+    })
   })
 
   it('should ignore manual close during failed state and remain failed', async () => {
@@ -1670,13 +1712,19 @@ describe('Client', { timeout: 100 }, () => {
     socket.close()
     expect(client['state'].type).toBe('failed')
 
-    expect(onStateChanged).toHaveBeenCalledExactlyOnceWith('failed')
-    onStateChanged.mockClear()
+
+    queueMicrotask(() => {
+      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['failed']])
+      onStateChanged.mockClear()
+    })
 
     client.close()
 
     expect(client['state'].type).toBe('failed')
-    expect(onStateChanged).not.toBeCalled()
+
+    queueMicrotask(() => {
+      expect(onStateChanged).not.toBeCalled()
+    })
   })
 
   it('should clear pending unsubs on subscribe_error so disconnect does not crash', async () => {
@@ -1768,15 +1816,23 @@ describe('Client', { timeout: 100 }, () => {
     expect(client['state'].type).toBe('handshaking')
 
     vi.advanceTimersByTime(14_999)
-    expect(onStateChanged).not.toBeCalled()
+
+    queueMicrotask(() => {
+      expect(onStateChanged.mock.calls).toEqual([['connecting']])
+    })
 
     vi.advanceTimersByTime(1)
-    expect(onStateChanged).toHaveBeenCalledExactlyOnceWith('backoff')
+
+    queueMicrotask(() => {
+      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['backoff']])
+    })
   })
 
   it('should throw on connection error', async () => {
     expectUncaughtException('[aws-appsync-events] connection error: UnauthorizedException 401 (You are not authorized to make this call.), UnauthorizedException 401')
-    const { client, sockets } = newClient()
+
+    const onStateChanged = vi.fn()
+    const { client, sockets } = newClient({ onStateChanged })
 
     client.connect()
     await tick
@@ -1797,12 +1853,19 @@ describe('Client', { timeout: 100 }, () => {
       ],
       type: 'connection_error'
     })
+
+    expect(client['state'].type).toBe('failed')
+
+    queueMicrotask(() => {
+      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['failed']])
+    })
   })
 
   it('should throw on invalid connectionTimeoutMs', async () => {
     expectUncaughtException('[aws-appsync-events bug] expected "connection_ack" message to have positive numeric "connectionTimeoutMs" (message: {"type":"connection_ack"})')
 
-    const { client, sockets } = newClient()
+    const onStateChanged = vi.fn()
+    const { client, sockets } = newClient({ onStateChanged })
 
     await subscribeWithMocks(client, 'default/foo')
 
@@ -1810,12 +1873,19 @@ describe('Client', { timeout: 100 }, () => {
     socket.open()
     socket.consumeConnectionInit()
     socket.send({ type: 'connection_ack' })
+
+    expect(client['state'].type).toBe('failed')
+
+    queueMicrotask(() => {
+      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['failed']])
+    })
   })
 
   it('should throw on negative connectionTimeoutMs', async () => {
     expectUncaughtException('[aws-appsync-events bug] expected "connection_ack" message to have positive numeric "connectionTimeoutMs" (message: {"type":"connection_ack","connectionTimeoutMs":-5})')
 
-    const { client, sockets } = newClient()
+    const onStateChanged = vi.fn()
+    const { client, sockets } = newClient({ onStateChanged })
 
     await subscribeWithMocks(client, 'default/foo')
 
@@ -1823,6 +1893,12 @@ describe('Client', { timeout: 100 }, () => {
     socket.open()
     socket.consumeConnectionInit()
     socket.send({ type: 'connection_ack', connectionTimeoutMs: -5 })
+
+    expect(client['state'].type).toBe('failed')
+
+    queueMicrotask(() => {
+      expect(onStateChanged.mock.calls).toEqual([['connecting'], ['failed']])
+    })
   })
 
   it('should throw on subscribe_success without id', async () => {
