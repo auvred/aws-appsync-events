@@ -1,4 +1,4 @@
-name: Publish
+name: Release
 
 on:
   push:
@@ -24,6 +24,6 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
       - run: pnpm publish --no-git-checks # https://github.com/pnpm/pnpm/issues/9011
-      - run: pnpm changelogithub@13.16.0
+      - run: pnpm dlx changelogithub@13.16.0
         env:
           GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
