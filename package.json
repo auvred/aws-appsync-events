@@ -21,6 +21,7 @@
     "access": "public"
   },
   "sideEffects": false,
+  "packageManager": "pnpm@10.15.1",
   "scripts": {
     "build": "tsdown",
     "format": "prettier -w .",
