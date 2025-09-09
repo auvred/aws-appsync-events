@@ -835,7 +835,7 @@ export class Client {
    * @param options - Optional {@link PublishOpts | `PublishOpts`}
    * @returns A promise that resolves when all event batches have been published.
    */
-  publish = async (
+  publishHttp = async (
     channel: string,
     events: unknown[],
     options: PublishOpts | undefined = {},
@@ -897,14 +897,8 @@ export class Client {
         if (typeof res !== 'object' || res == null) {
           return
         }
-        if (
-          'errors' in res &&
-          Array.isArray(res.errors) &&
-          res.errors.length > 0
-        ) {
-          throw new Error(
-            `Publish error: ${JSON.stringify(res.errors, null, 2)}`,
-          )
+        if ('errors' in res) {
+          throw new Error(`Publish error${normalizeErrors(res.errors)}`)
         }
         if (
           'failed' in res &&
@@ -912,12 +906,15 @@ export class Client {
           res.failed.length > 0
         ) {
           throw new Error(
-            `Publish error: ${JSON.stringify(res.failed, null, 2)}`,
+            `Publish errors: ${JSON.stringify(res.failed, null, 2)}`,
           )
         }
       }),
     )
   }
+
+  // TODO
+  // private publishWebSocket
 
   private authorizationHeaders = async (
     message: AuthorizerOpts['message'],

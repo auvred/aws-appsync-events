@@ -18,7 +18,7 @@ test('api key auth', async () => {
 
   await expect.poll(() => established).toHaveBeenCalledOnce()
 
-  await client.publish('default/foo', ['foo', { bar: [123] }])
+  await client.publishHttp('default/foo', ['foo', { bar: [123] }])
 
   await expect.poll(() => event).toHaveBeenCalledTimes(2)
 
@@ -79,7 +79,7 @@ test('publish batch split', async () => {
   await expect.poll(() => established).toHaveBeenCalledOnce()
 
   const events = new Array(7).fill(null).map((_, i) => i)
-  await client.publish('default/foo', events)
+  await client.publishHttp('default/foo', events)
 
   await expect.poll(() => event).toHaveBeenCalledTimes(events.length)
 
@@ -98,9 +98,42 @@ test('publish error', async () => {
   )
 
   await expect(async () => {
-    await client.publish('default/foo', [123])
+    await client.publishHttp('default/foo', [123])
   }).rejects.toThrow()
   expect(retry).toHaveBeenCalledTimes(2)
+})
+
+test('publish should not retry on 403', async () => {
+  const retry = vi.fn((attempt: number) => attempt < 10 && 10)
+  const client = new Client(API_ENDPOINT, apiKeyAuthorizer(API_KEY), {
+    retryBehavior: retry,
+  })
+
+  await expect(async () => {
+    await client.publishHttp('iam-auth/foo', [123])
+  }).rejects.toThrow('Publish error: UnauthorizedException')
+  expect(retry).toHaveBeenCalledTimes(0)
+})
+
+test('publish should not retry on invalid event', async () => {
+  const retry = vi.fn((attempt: number) => attempt < 10 && 10)
+  const client = new Client(API_ENDPOINT, apiKeyAuthorizer(API_KEY), {
+    retryBehavior: retry,
+  })
+
+  await expect(async () => {
+    await client.publishHttp('default/foo', ['a'.repeat(1024 * 1024)])
+  }).rejects.toThrow(
+    new RegExp(`Publish errors: \\[
+  \\{
+    "code": "EventTooLargeException",
+    "identifier": "[\\w-]+",
+    "index": 0,
+    "message": "Transformed event is larger than 240KB"
+  \\}
+\\]`),
+  )
+  expect(retry).toHaveBeenCalledTimes(0)
 })
 
 test('custom authorizer', async () => {
@@ -117,7 +150,9 @@ test('custom authorizer', async () => {
 
   await expect.poll(() => established).toHaveBeenCalledOnce()
 
-  await client.publish('iam-auth/foo', ['foo', { bar: [123] }], { authorizer })
+  await client.publishHttp('iam-auth/foo', ['foo', { bar: [123] }], {
+    authorizer,
+  })
 
   await expect.poll(() => event).toHaveBeenCalledTimes(2)
 
@@ -140,7 +175,7 @@ test('aws iam auth', async () => {
 
   await expect.poll(() => established).toHaveBeenCalledOnce()
 
-  await client.publish('iam-auth/foo', ['foo', { bar: [123] }])
+  await client.publishHttp('iam-auth/foo', ['foo', { bar: [123] }])
 
   await expect.poll(() => event).toHaveBeenCalledTimes(2)
 
