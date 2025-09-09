@@ -1,7 +1,7 @@
 {
   "name": "aws-appsync-events",
   "type": "module",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "main": "dist/index.js",
   "license": "MIT",
   "description": "A lightweight client for AWS AppSync Events",
