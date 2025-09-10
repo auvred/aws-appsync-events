@@ -14,6 +14,7 @@ import {
   Client,
   parseEndpoint,
   ResettableTimer,
+  type Authorizer,
   type ClientOpts,
   type WebSocketAdapter,
   type WebSocketAdapterConstructor,
@@ -481,11 +482,15 @@ describe('Client', { timeout: 100 }, () => {
     }
   }
 
-  function newClient(opts?: ClientOpts) {
-    const client = new Client('example.com', apiKeyAuthorizer('foo'), {
-      retryBehavior: simpleRetryBehavior(3),
-      ...opts,
-    })
+  function newClient(opts?: ClientOpts, authorizer?: Authorizer) {
+    const client = new Client(
+      'example.com',
+      authorizer ?? apiKeyAuthorizer('foo'),
+      {
+        retryBehavior: simpleRetryBehavior(3),
+        ...opts,
+      },
+    )
     const sockets: Socket[] = []
 
     // @ts-expect-error - incompatible addEventListener/removeEventListener
@@ -532,6 +537,16 @@ describe('Client', { timeout: 100 }, () => {
       },
     }
   }
+
+  test('non-ascii auth', async () => {
+    const { client, sockets } = newClient({}, apiKeyAuthorizer('🐱'))
+
+    client.connect()
+    await tick
+
+    const socket = sockets.get(0)
+    socket.openAndHandshake()
+  })
 
   test('basic subscribe', async () => {
     const { client, sockets } = newClient()

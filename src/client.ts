@@ -276,6 +276,16 @@ export class ResettableTimer {
   }
 }
 
+let encoder: TextEncoder | null = null
+// https://developer.mozilla.org/en-US/docs/Web/API/Window/btoa#unicode_strings
+function base64Encode(str: string): string {
+  return btoa(
+    Array.from((encoder ??= new TextEncoder()).encode(str), byte =>
+      String.fromCodePoint(byte),
+    ).join(''),
+  )
+}
+
 // 2022+ https://caniuse.com/mdn-api_crypto_randomuuid
 const randomId =
   crypto.randomUUID?.bind(crypto) ??
@@ -538,7 +548,7 @@ export class Client {
     this.state = { type: 'auth-preparing' }
     this.onStateChanged?.('connecting')
 
-    const authPayload = btoa(
+    const authPayload = base64Encode(
       JSON.stringify(
         await this.authorizationHeaders(
           { type: 'connect' },
