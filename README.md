@@ -45,7 +45,7 @@ const sub = client.subscribe('test/room-1', {
 // publish a couple of messages after 5 seconds
 setTimeout(
   () =>
-    client.publish('test/*', [
+    client.publishHttp('test/*', [
       { hello: 'from aws-appsync-events' },
       'another message',
     ]),
@@ -123,7 +123,7 @@ Creates a new AppSync Events client.
 
   - `defaultPublishAuthorizer?: Authorizer` - The default [authorizer](#authorizer) for `publish` requests.
 
-    If no specific authorizer is provided for a `publish()` call, this default authorizer will be used.
+    If no specific authorizer is provided for a `publishHttp()` call, this default authorizer will be used.
 
     By default, this is set to client's `connectionAuthorizer`.
 
@@ -163,7 +163,7 @@ const sub = client.subscribe('orders/new', {
 sub.unsubscribe()
 ```
 
-#### `client.publish(channel, events, options?)`
+#### `client.publishHttp(channel, events, options?)`
 
 Publishes a list of events to the specified channel.
 
@@ -191,7 +191,7 @@ Returns a promise that resolves when all event batches have been published.
     By default, client's `defaultPublishAuthorizer` will be used.
 
 ```javascript
-await client.publish('orders/new', [
+await client.publishHttp('orders/new', [
   { id: 1, status: 'created' },
   { id: 2, status: 'created' },
 ])
