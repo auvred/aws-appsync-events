@@ -426,7 +426,7 @@ export class Client {
   /**
    * Start a realtime subscription on a channel
    */
-  subscribe = (channel: string, options: SubscribeOpts) => {
+  readonly subscribe = (channel: string, options: SubscribeOpts) => {
     const { event, error, established, authorizer } = options
     const id = randomId()
 
@@ -519,7 +519,7 @@ export class Client {
     }
   }
 
-  connect: () => void = async () => {
+  readonly connect: () => void = async () => {
     const dontInitConnection =
       this.idleConnectionKeepAliveTimeMs === false && this.subsById.size === 0
     let attempt = 0
@@ -819,7 +819,7 @@ export class Client {
     }
   }
 
-  close = (): void => {
+  readonly close = (): void => {
     switch (this.state.type) {
       // 'idle', 'failed' - leave it as is
       case 'backoff':
@@ -845,7 +845,7 @@ export class Client {
    * @param options - Optional {@link PublishOpts | `PublishOpts`}
    * @returns A promise that resolves when all event batches have been published.
    */
-  publishHttp = async (
+  readonly publishHttp = async (
     channel: string,
     events: unknown[],
     options: PublishOpts | undefined = {},
@@ -926,7 +926,7 @@ export class Client {
   // TODO
   // private publishWebSocket
 
-  private authorizationHeaders = async (
+  private readonly authorizationHeaders = async (
     message: AuthorizerOpts['message'],
     authorizer: Authorizer,
   ) => {
@@ -937,7 +937,7 @@ export class Client {
     })
   }
 
-  private wsSubscribe = async (
+  private readonly wsSubscribe = async (
     ws: WebSocketAdapter,
     subId: string,
     channel: string,
@@ -958,7 +958,7 @@ export class Client {
       }),
     )
 
-  private fail = () => {
+  private readonly fail = () => {
     this.state = { type: 'failed' }
     this.onStateChanged?.('failed')
   }
